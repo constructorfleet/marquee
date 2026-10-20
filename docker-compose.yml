@@ -6,7 +6,9 @@ services:
       - "3000:3000"
     volumes:
       - ./data:/data
-    # Optional: set a fixed session secret (otherwise one is generated and stored in /data)
+    # Optional: set a fixed session secret (otherwise one is generated and stored in /data),
+    # and the time zone for daily syncs and scheduled picks (defaults to UTC)
     # environment:
     #   - SESSION_SECRET=change-me-to-a-long-random-string
+    #   - TZ=America/New_York
     restart: unless-stopped

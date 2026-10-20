@@ -1,5 +1,5 @@
 import { logger } from '../logger.js';
-import { getPlexConfig } from '../settings.js';
+import { getPlexConfig, setSetting } from '../settings.js';
 import { fetchPlexData } from '../plex/sync.js';
 import { fetchJfData, getJfConfig } from '../jellyfin/client.js';
 import type { SourceKind } from './types.js';
@@ -21,7 +21,7 @@ export interface SourceSyncResult {
 }
 
 // Sync every configured media server. One source failing doesn't stop the others.
-export async function syncAllSources(): Promise<{ results: SourceSyncResult[]; errors: string[] }> {
+async function syncAllSources(): Promise<{ results: SourceSyncResult[]; errors: string[] }> {
   const configured = getConfiguredSources();
   if (!configured.length) {
     throw new Error('No media server is configured. Add Plex, Jellyfin, or Emby in Admin settings.');
@@ -44,4 +44,30 @@ export async function syncAllSources(): Promise<{ results: SourceSyncResult[]; e
   }
   if (!results.length) throw new Error(errors.join(' · '));
   return { results, errors };
+}
+
+let syncRunning = false;
+
+export function isSyncRunning(): boolean {
+  return syncRunning;
+}
+
+// Sync and record when it ran and how it went, so the admin page can show the
+// outcome of unattended syncs. Manual and scheduled runs share one guard so two
+// syncs never write the library at the same time.
+export async function runLibrarySync(): Promise<{ results: SourceSyncResult[]; errors: string[] }> {
+  if (syncRunning) throw new Error('A library sync is already running');
+  syncRunning = true;
+  // Stamped up front so a failing scheduled sync waits a full interval before retrying.
+  setSetting('sync.lastRunAt', new Date().toISOString());
+  try {
+    const outcome = await syncAllSources();
+    setSetting('sync.lastError', outcome.errors.join(' · '));
+    return outcome;
+  } catch (err) {
+    setSetting('sync.lastError', err instanceof Error ? err.message : 'sync failed');
+    throw err;
+  } finally {
+    syncRunning = false;
+  }
 }

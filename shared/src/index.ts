@@ -187,7 +187,19 @@ export interface AdminSettings {
   seerrKeySet: boolean;
   allowRegistration: boolean;
   widgetKeySet: boolean;
+  // Automatic library sync
+  syncMode: SyncMode;
+  syncIntervalHours: number;
+  syncTimeOfDay: string; // 'HH:MM' in the server's time zone
+  lastSyncAt: string | null;
+  lastSyncError: string | null;
+  nextSyncAt: string | null;
+  syncRunning: boolean;
+  serverTimeZone: string;
 }
+
+// 'interval' syncs every N hours after the last sync; 'daily' syncs once a day at a set time.
+export type SyncMode = 'off' | 'interval' | 'daily';
 
 // Read-only shapes returned by the external widget API (GET /api/widget/polls).
 export interface WidgetPollOption {

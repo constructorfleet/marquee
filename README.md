@@ -11,7 +11,7 @@
 
 ### Polls
 
-Pick titles from your library (search, filter by library or genre, or add a whole collection at once), share via link, and vote by tapping a poster — **one vote per person, enforced by the database**. Results update live for everyone watching. Polls can auto-open and auto-close on a schedule, with the winner computed automatically (ties broken at random). Admins can pin important polls to the top.
+Pick titles from your library (search, filter by library or genre, or add a whole collection at once), share via link, and vote by tapping a poster — **one vote per person, enforced by the database**. Results update live for everyone watching. Polls can auto-open and auto-close on a schedule, with the winner computed automatically (ties go to the title that reached the top count first). Add or remove titles any time before voting closes. Admins can pin important polls to the top.
 
 ![Polls](docs/screenshots/polls.png)
 
@@ -57,7 +57,7 @@ Post a poll to a channel and people vote with buttons — **no Marquee account n
 
 ### Everything else
 
-- **Media servers**: Plex, Jellyfin, and Emby — any combination at once, with cross-server de-duplication
+- **Media servers**: Plex, Jellyfin, and Emby — any combination at once, with cross-server de-duplication and automatic library sync (every few hours or daily at a set time)
 - **Sign-in options**: local accounts, Sign in with Plex (popup PIN flow), Jellyfin/Emby credentials, OIDC (Authentik/Authelia/Keycloak/…), and passkeys (WebAuthn)
 - **User management**: create accounts, import your Plex Home members and friends in one click, set/reset passwords, promote admins, disable open registration
 - **Trakt**: users connect their own accounts for personal watch status everywhere
@@ -83,7 +83,7 @@ services:
 docker compose up -d
 ```
 
-Open the app, create the first admin account, then in **Admin → Media servers** add your Plex/Jellyfin/Emby details and hit **Sync all libraries now**. All state lives in `./data` — back up that folder and you've backed up everything.
+Open the app, create the first admin account, then in **Admin → Media servers** add your Plex/Jellyfin/Emby details and hit **Sync all libraries now** — then turn on **Automatic sync** so new titles keep showing up on their own. All state lives in `./data` — back up that folder and you've backed up everything.
 
 ## Configuration
 
@@ -97,6 +97,7 @@ Open the app, create the first admin account, then in **Admin → Media servers*
 | `TRUST_PROXY` | `true` | Trust `X-Forwarded-*` from a reverse proxy. Set `false` if exposing the server directly (prevents client IP spoofing that would bypass login rate limits). Also accepts a hop count or IP/CIDR allowlist. |
 | `ADMIN_IDLE_MINUTES` | `120` | Minutes of inactivity before an **admin** session is auto-logged-out |
 | `USER_IDLE_MINUTES` | `360` | Minutes of inactivity before a regular **user** session is auto-logged-out |
+| `TZ` | `UTC` (Docker) | Time zone for daily library syncs and scheduled randomizer picks, e.g. `America/New_York` |
 
 Everything else — media servers, Trakt, TMDb, Discord, request services, OIDC, the public app URL — is configured in the Admin UI, not env vars.
 

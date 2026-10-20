@@ -5,14 +5,20 @@ import { z } from 'zod';
 import { db } from '../db/index.js';
 import { media, pollOptions, polls, votes } from '../db/schema.js';
 import { requireUser } from '../auth/plugin.js';
-import { postPollToDiscord, updatePollMessage } from '../discord/bot.js';
+import { DISCORD_MAX_OPTIONS, postPollToDiscord, updatePollMessage } from '../discord/bot.js';
 import { emitPollUpdate, pollEvents } from '../events.js';
-import { closePoll, getOptionCounts, serializePollDetail } from '../polls/service.js';
+import {
+  closePoll,
+  getOptionCounts,
+  MAX_POLL_OPTIONS,
+  optionFromMedia,
+  serializePollDetail,
+} from '../polls/service.js';
 
 const createPollSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200),
   description: z.string().max(2000).optional(),
-  mediaIds: z.array(z.number().int()).min(2, 'Pick at least two options').max(50),
+  mediaIds: z.array(z.number().int()).min(2, 'Pick at least two options').max(MAX_POLL_OPTIONS),
   opensAt: z.string().optional(),
   closesAt: z.string().optional(),
   openNow: z.boolean().default(true),
@@ -94,18 +100,64 @@ export async function pollRoutes(app: FastifyInstance) {
       .returning()
       .get();
 
-    for (const m of items) {
-      db.insert(pollOptions)
-        .values({
-          pollId: poll.id,
-          mediaId: m.id,
-          title: m.year ? `${m.title} (${m.year})` : m.title,
-          thumb: m.thumb,
-        })
-        .run();
-    }
+    for (const m of items) db.insert(pollOptions).values(optionFromMedia(poll.id, m)).run();
 
     return reply.code(201).send(serializePollDetail(poll, request.user!.id));
+  });
+
+  // The owner (or an admin) can add titles until voting closes.
+  app.post('/api/polls/:token/options', { preHandler: requireUser }, async (request, reply) => {
+    const { token } = request.params as { token: string };
+    const parsed = z
+      .object({ mediaIds: z.array(z.number().int()).min(1).max(MAX_POLL_OPTIONS) })
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
+    const poll = pollByToken(token);
+    if (!poll) return reply.code(404).send({ error: 'Poll not found' });
+    if (!canManage(poll, request.user!)) return reply.code(403).send({ error: 'Only the poll owner can do that' });
+    if (poll.status === 'closed') return reply.code(409).send({ error: 'This poll has already closed' });
+
+    const existing = db.select().from(pollOptions).where(eq(pollOptions.pollId, poll.id)).all();
+    const present = new Set(existing.map((o) => o.mediaId));
+    const items = [...new Set(parsed.data.mediaIds)]
+      .filter((id) => !present.has(id))
+      .map((id) => db.select().from(media).where(eq(media.id, id)).get())
+      .filter((m): m is typeof media.$inferSelect => !!m);
+    if (!items.length) return reply.code(400).send({ error: 'Nothing to add — those titles are already in this poll' });
+
+    // A poll already posted to Discord has to keep fitting in its button grid.
+    const limit = poll.discordMessageId ? DISCORD_MAX_OPTIONS : MAX_POLL_OPTIONS;
+    if (existing.length + items.length > limit) {
+      return reply.code(400).send({
+        error: poll.discordMessageId
+          ? `This poll is on Discord, which supports at most ${DISCORD_MAX_OPTIONS} options`
+          : `Polls support up to ${MAX_POLL_OPTIONS} options`,
+      });
+    }
+
+    for (const m of items) db.insert(pollOptions).values(optionFromMedia(poll.id, m)).run();
+    emitPollUpdate(token);
+    void updatePollMessage(poll.id);
+    return serializePollDetail(poll, request.user!.id);
+  });
+
+  // Removing an option discards its votes (they cascade), so those voters can vote again.
+  app.delete('/api/polls/:token/options/:optionId', { preHandler: requireUser }, async (request, reply) => {
+    const { token, optionId } = request.params as { token: string; optionId: string };
+    const poll = pollByToken(token);
+    if (!poll) return reply.code(404).send({ error: 'Poll not found' });
+    if (!canManage(poll, request.user!)) return reply.code(403).send({ error: 'Only the poll owner can do that' });
+    if (poll.status === 'closed') return reply.code(409).send({ error: 'This poll has already closed' });
+
+    const options = db.select().from(pollOptions).where(eq(pollOptions.pollId, poll.id)).all();
+    const option = options.find((o) => o.id === Number(optionId));
+    if (!option) return reply.code(404).send({ error: 'That option does not belong to this poll' });
+    if (options.length <= 2) return reply.code(400).send({ error: 'A poll needs at least two options' });
+
+    db.delete(pollOptions).where(eq(pollOptions.id, option.id)).run();
+    emitPollUpdate(token);
+    void updatePollMessage(poll.id);
+    return serializePollDetail(poll, request.user!.id);
   });
 
   app.get('/api/polls/:token', { preHandler: requireUser }, async (request, reply) => {

@@ -7,6 +7,7 @@ import type {
   AdminUserInfo,
   IssueReport,
   PlexTestResult,
+  SyncMode,
   SyncResult,
   TmdbScanStatus,
 } from '@marquee/shared';
@@ -223,6 +224,107 @@ function UsersPanel() {
 }
 
 // Jellyfin/Emby share one card shape — url + API key + test.
+const SYNC_INTERVALS = [1, 3, 6, 12, 24];
+
+const formatWhen = (iso: string) => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+
+// Unattended library sync, either every few hours or once a day at a set time.
+function AutoSyncCard() {
+  const queryClient = useQueryClient();
+  const [mode, setMode] = useState<SyncMode>('off');
+  const [intervalHours, setIntervalHours] = useState(6);
+  const [timeOfDay, setTimeOfDay] = useState('03:00');
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // Refetch on a timer so the last/next sync status stays current, faster while a sync runs.
+  const { data: settings } = useQuery({
+    queryKey: ['admin', 'settings'],
+    queryFn: () => api<AdminSettings>('/api/admin/settings'),
+    refetchInterval: (query) => (query.state.data?.syncRunning ? 3000 : 60_000),
+  });
+  useEffect(() => {
+    if (settings?.syncMode) setMode(settings.syncMode);
+    if (settings?.syncIntervalHours) setIntervalHours(settings.syncIntervalHours);
+    if (settings?.syncTimeOfDay) setTimeOfDay(settings.syncTimeOfDay);
+  }, [settings?.syncMode, settings?.syncIntervalHours, settings?.syncTimeOfDay]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      api<AdminSettings>('/api/admin/settings', {
+        method: 'PUT',
+        body: { syncMode: mode, syncIntervalHours: intervalHours, syncTimeOfDay: timeOfDay },
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['admin', 'settings'], data);
+      setMsg(mode === 'off' ? '✓ Automatic sync turned off' : '✓ Automatic sync saved');
+    },
+    onError: (err) => setMsg(err instanceof ApiError ? `✗ ${err.message}` : '✗ Save failed'),
+  });
+
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const next = settings?.nextSyncAt ? new Date(settings.nextSyncAt) : null;
+
+  return (
+    <section className="card space-y-4 p-5">
+      <h2 className="text-xs font-semibold tracking-widest text-neon-500 uppercase">Automatic sync</h2>
+      <p className="text-sm text-stone-400">
+        Keep Marquee up to date with your media servers so new titles appear without anyone clicking Sync.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <select className="input w-auto" value={mode} onChange={(e) => setMode(e.target.value as SyncMode)}>
+          <option value="off">Off</option>
+          <option value="interval">Every few hours</option>
+          <option value="daily">Once a day</option>
+        </select>
+        {mode === 'interval' && (
+          <select className="input w-auto" value={intervalHours} onChange={(e) => setIntervalHours(Number(e.target.value))}>
+            {SYNC_INTERVALS.map((h) => (
+              <option key={h} value={h}>
+                every {h === 1 ? 'hour' : `${h} hours`}
+              </option>
+            ))}
+          </select>
+        )}
+        {mode === 'daily' && (
+          <label className="flex items-center gap-2 text-sm text-stone-300">
+            at
+            <input type="time" className="input w-auto" value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} />
+          </label>
+        )}
+        <button
+          className="btn btn-neon"
+          disabled={save.isPending || (mode === 'daily' && !timeOfDay)}
+          onClick={() => save.mutate()}
+        >
+          Save
+        </button>
+      </div>
+      {mode === 'daily' && settings && (
+        <p className="text-xs text-stone-500">
+          Uses the server’s time zone ({settings.serverTimeZone}).
+          {settings.serverTimeZone !== browserZone &&
+            ` That differs from yours (${browserZone}) — set the TZ environment variable on the server to change it.`}
+        </p>
+      )}
+      {settings && (
+        <div className="space-y-1 text-sm text-stone-400">
+          <p>
+            {settings.syncRunning
+              ? 'Syncing now…'
+              : settings.lastSyncAt
+                ? `Last sync: ${formatWhen(settings.lastSyncAt)} ${settings.lastSyncError ? `— ✗ ${settings.lastSyncError}` : '✓'}`
+                : 'No sync has run yet.'}
+          </p>
+          {settings.syncMode !== 'off' && next && !settings.syncRunning && (
+            <p>Next automatic sync: {next.getTime() <= Date.now() ? 'within a minute' : formatWhen(next.toISOString())}</p>
+          )}
+        </div>
+      )}
+      {msg && <p className="text-sm text-stone-300">{msg}</p>}
+    </section>
+  );
+}
+
 function JfServerCard({
   kind,
   savedUrl,
@@ -486,6 +588,8 @@ export function Admin() {
       queryClient.invalidateQueries({ queryKey: ['admin', 'stats'] });
     },
     onError,
+    // Either way, refresh the automatic-sync card's last/next sync times.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }),
   });
 
   const resolveIssue = useMutation({
@@ -574,6 +678,7 @@ export function Admin() {
 
       <JfServerCard kind="jellyfin" savedUrl={settings?.jellyfinUrl} keySet={settings?.jellyfinKeySet} />
       <JfServerCard kind="emby" savedUrl={settings?.embyUrl} keySet={settings?.embyKeySet} />
+      <AutoSyncCard />
         </>
       )}
 

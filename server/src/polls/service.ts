@@ -1,8 +1,15 @@
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { pollOptions, polls, votes } from '../db/schema.js';
+import { media, pollOptions, polls, votes } from '../db/schema.js';
 import { notifyPollClosed } from '../discord/bot.js';
 import { emitPollUpdate } from '../events.js';
+
+export const MAX_POLL_OPTIONS = 50;
+
+// An option snapshots the title (with year) and poster at the time it's added.
+export function optionFromMedia(pollId: number, m: typeof media.$inferSelect): typeof pollOptions.$inferInsert {
+  return { pollId, mediaId: m.id, title: m.year ? `${m.title} (${m.year})` : m.title, thumb: m.thumb };
+}
 
 export function getOptionCounts(pollId: number): Map<number, number> {
   const rows = db

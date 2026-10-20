@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DiscordStatus, PollDetail } from '@marquee/shared';
 import { api, ApiError } from '../api';
 import { useAuth } from '../auth';
+import { EditPollOptions } from '../components/EditPollOptions';
 import { MediaDetailsModal } from '../components/MediaDetails';
 import { Poster } from '../components/Poster';
 
@@ -12,6 +13,7 @@ export function PollPage() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [detailsId, setDetailsId] = useState<number | null>(null);
+  const [editing, setEditing] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -151,6 +153,11 @@ export function PollPage() {
             </button>
           )}
           {poll.discordPosted && <span className="chip self-center bg-neon-500/15 text-neon-300">On Discord ✓</span>}
+          {(poll.isOwner || auth?.user?.isAdmin) && poll.status !== 'closed' && (
+            <button className="btn btn-ghost" onClick={() => setEditing(true)}>
+              Edit options
+            </button>
+          )}
           {poll.isOwner && poll.status === 'open' && (
             <button className="btn btn-danger" onClick={() => transition.mutate('close')}>
               Close voting
@@ -230,6 +237,7 @@ export function PollPage() {
         })}
       </div>
 
+      {editing && poll.status !== 'closed' && <EditPollOptions poll={poll} onClose={() => setEditing(false)} />}
       <MediaDetailsModal mediaId={detailsId} onClose={() => setDetailsId(null)} />
     </div>
   );

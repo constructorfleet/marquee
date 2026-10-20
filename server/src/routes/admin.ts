@@ -12,7 +12,8 @@ import { testJf } from '../jellyfin/client.js';
 import { getSections } from '../plex/client.js';
 import { getSeerrConfig, testSeerr } from '../seerr/client.js';
 import { getPlexConfig, getSetting, setSetting } from '../settings.js';
-import { syncAllSources } from '../sources/index.js';
+import { isSyncRunning, runLibrarySync } from '../sources/index.js';
+import { syncStatus } from '../sources/syncSchedule.js';
 import { getScanState, startFranchiseScan } from '../tmdb/scan.js';
 
 export async function adminRoutes(app: FastifyInstance) {
@@ -80,6 +81,7 @@ export async function adminRoutes(app: FastifyInstance) {
     seerrKeySet: !!getSetting('seerr.apiKey'),
     allowRegistration: getSetting('auth.allowRegistration') !== 'false',
     widgetKeySet: !!getSetting('widget.apiKey'),
+    ...syncStatus(),
   });
 
   app.get('/api/admin/settings', { preHandler: requireAdmin }, async () => settingsPayload());
@@ -120,6 +122,9 @@ export async function adminRoutes(app: FastifyInstance) {
         seerrApiKey: z.string().optional(),
         seerrKind: z.enum(['overseerr', 'ombi']).optional(),
         allowRegistration: z.boolean().optional(),
+        syncMode: z.enum(['off', 'interval', 'daily']).optional(),
+        syncIntervalHours: z.number().int().min(1, 'Sync at most once an hour').max(168).optional(),
+        syncTimeOfDay: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Time must be HH:MM').optional(),
       })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
@@ -151,6 +156,9 @@ export async function adminRoutes(app: FastifyInstance) {
     if (parsed.data.allowRegistration !== undefined) {
       setSetting('auth.allowRegistration', String(parsed.data.allowRegistration));
     }
+    if (parsed.data.syncMode) setSetting('sync.mode', parsed.data.syncMode);
+    if (parsed.data.syncIntervalHours) setSetting('sync.intervalHours', String(parsed.data.syncIntervalHours));
+    if (parsed.data.syncTimeOfDay) setSetting('sync.timeOfDay', parsed.data.syncTimeOfDay);
     return settingsPayload();
   });
 
@@ -226,8 +234,9 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // Sync every configured media server (Plex / Jellyfin / Emby).
   app.post('/api/admin/sync', { preHandler: requireAdmin }, async (_request, reply) => {
+    if (isSyncRunning()) return reply.code(409).send({ error: 'A library sync is already running — try again shortly' });
     try {
-      return await syncAllSources();
+      return await runLibrarySync();
     } catch (err) {
       return reply.code(502).send({ error: err instanceof Error ? err.message : 'Sync failed' });
     }

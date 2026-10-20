@@ -102,6 +102,9 @@ function pollEmbed(poll: PollRow, options: OptionRow[], final: boolean): EmbedBu
   return embed;
 }
 
+// Five rows of five buttons is the most a Discord message can carry.
+export const DISCORD_MAX_OPTIONS = 25;
+
 function pollButtons(poll: PollRow, options: OptionRow[]): ActionRowBuilder<ButtonBuilder>[] {
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
   for (let i = 0; i < options.length; i += 5) {
@@ -138,7 +141,9 @@ export async function postPollToDiscord(pollId: number): Promise<void> {
   if (!poll) throw new Error('Poll not found');
   if (poll.status !== 'open') throw new Error('Open the poll before posting it to Discord');
   const options = getOptions(poll.id);
-  if (options.length > 25) throw new Error('Discord supports at most 25 options per poll');
+  if (options.length > DISCORD_MAX_OPTIONS) {
+    throw new Error(`Discord supports at most ${DISCORD_MAX_OPTIONS} options per poll`);
+  }
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased() || !('send' in channel)) {
@@ -154,7 +159,8 @@ export async function postPollToDiscord(pollId: number): Promise<void> {
     .run();
 }
 
-// Refresh the embed's counts (e.g. after an in-app vote). Best-effort.
+// Refresh the embed's counts (e.g. after an in-app vote) and rebuild the vote
+// buttons, since options can be added or removed while a poll is open. Best-effort.
 export async function updatePollMessage(pollId: number): Promise<void> {
   try {
     const poll = db.select().from(polls).where(eq(polls.id, pollId)).get();
@@ -162,9 +168,10 @@ export async function updatePollMessage(pollId: number): Promise<void> {
     const message = await fetchPollMessage(poll);
     if (!message) return;
     const final = poll.status === 'closed';
+    const options = getOptions(poll.id);
     await message.edit({
-      embeds: [pollEmbed(poll, getOptions(poll.id), final)],
-      components: final ? [] : undefined,
+      embeds: [pollEmbed(poll, options, final)],
+      components: final ? [] : pollButtons(poll, options),
     });
   } catch {
     // stale message or missing permissions — never fatal

@@ -5,13 +5,16 @@ import { polls } from './db/schema.js';
 import { emitPollUpdate } from './events.js';
 import { closePoll } from './polls/service.js';
 import { runDueSchedules } from './schedules/service.js';
+import { runDueLibrarySync } from './sources/syncSchedule.js';
 
 // Every minute: open drafts whose opensAt has passed, close open polls whose
-// closesAt has passed, and fire any due scheduled randomizer picks.
+// closesAt has passed, fire any due scheduled randomizer picks, and start the
+// automatic library sync when it's due.
 export function startScheduler() {
   new Cron('* * * * *', () => {
     const now = new Date();
     runDueSchedules(now);
+    runDueLibrarySync(now);
 
     const toOpen = db
       .select()
