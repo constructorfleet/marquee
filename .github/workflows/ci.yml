@@ -78,7 +78,8 @@ jobs:
             echo "body<<NOTES_EOF"
             git log --no-merges --pretty='* %s' "$range" | grep -v '^\* Release v' || true
             echo ""
-            echo "Container image: \`ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME}\`"
+            # Image tags are bare semver (0.6.0), not the git tag (v0.6.0).
+            echo "Container image: \`ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}\`"
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
