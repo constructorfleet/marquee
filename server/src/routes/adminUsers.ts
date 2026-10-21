@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { db } from '../db/index.js';
 import { polls, sessions, users } from '../db/schema.js';
 import { requireAdmin } from '../auth/plugin.js';
+import { runIntegrityCheck } from '../db/health.js';
 import { hashPassword } from '../auth/passwords.js';
 import { getFriends, getHomeUsers } from '../plex/plextv.js';
 import { getPlexConfig } from '../settings.js';
@@ -112,6 +113,13 @@ export async function adminUserRoutes(app: FastifyInstance) {
   app.post('/api/admin/users/import-plex', { preHandler: requireAdmin }, async (_request, reply) => {
     const cfg = getPlexConfig();
     if (!cfg) return reply.code(503).send({ error: 'Plex is not configured' });
+    // Existing accounts are found by Plex id. With a damaged index that lookup
+    // misses them and every Plex user gets imported a second time, so check first.
+    if (!runIntegrityCheck().ok) {
+      return reply.code(409).send({
+        error: 'The database check found problems, so importing is paused to avoid duplicate accounts — see the Admin overview',
+      });
+    }
 
     let candidates: { plexId: string; name: string }[];
     try {

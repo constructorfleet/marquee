@@ -62,6 +62,7 @@ Post a poll to a channel and people vote with buttons — **no Marquee account n
 - **User management**: create accounts, import your Plex Home members and friends in one click, set/reset passwords, promote admins, disable open registration
 - **Trakt**: users connect their own accounts for personal watch status everywhere
 - **Issue reports**: users flag problems to the admin in-app
+- **Database health**: a daily integrity check warns admins about database damage (see [Database health](#database-health))
 - **PWA**: install on phones and desktops; touch-friendly, movie-theater dark theme
 
 ## Quick start (Docker)
@@ -190,7 +191,23 @@ curl -H "Authorization: Bearer $KEY" "https://marquee.example.com/api/widget/pol
 - Media-server tokens/keys never reach the browser — posters proxy through the server
 - Registration can be disabled for invite-only instances
 
-**Run it behind HTTPS** (Caddy, Traefik, nginx, or a Cloudflare tunnel). Passkeys require it (or localhost), and it's the right call for anything public-facing. Marquee sits happily behind a reverse proxy (`trustProxy` is on).
+**Run it behind HTTPS** (Caddy, Traefik, nginx, or a Cloudflare tunnel). Passkeys require it (or localhost), and it's the right call for anything public-facing. Marquee sits happily behind a reverse proxy on the same host, Docker network or LAN (see `TRUST_PROXY`).
+
+## Database health
+
+Everything lives in one SQLite file, `marquee.db` in the data folder. Marquee runs SQLite's full integrity check at startup and every day at 4:30 AM (server time). If it finds damage, admins get a banner on every page with details under **Admin → Overview**, and importing Plex users is paused — a damaged index hides existing accounts from the import, which would create duplicates.
+
+If the check reports problems:
+
+1. Stop the container and back up the data folder (`marquee.db` plus any `-wal`/`-shm` files beside it).
+2. If every problem mentions an index, the data itself is intact. Start the container again and rebuild the indexes from its terminal:
+   ```bash
+   cd /app && node -e "const db=require('better-sqlite3')('/data/marquee.db');db.exec('REINDEX');console.log(db.pragma('integrity_check',{simple:true}))"
+   ```
+   It prints `ok` once fixed. A `UNIQUE constraint failed` error means duplicate accounts slipped in while the index was damaged and have to be merged first — open an issue.
+3. Otherwise, restore the data folder from a backup or NAS snapshot.
+
+Keep the data folder on the host's own disks — SQLite isn't safe on network shares (SMB/NFS) — and never point two Marquee instances at the same folder.
 
 ## Development
 

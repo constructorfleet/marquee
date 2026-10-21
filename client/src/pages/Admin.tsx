@@ -5,6 +5,7 @@ import type {
   AdminSettings,
   AdminStats,
   AdminUserInfo,
+  DbHealth,
   IssueReport,
   PlexTestResult,
   SyncMode,
@@ -457,6 +458,105 @@ function WidgetApiCard({ keySet, appUrl }: { keySet: boolean | undefined; appUrl
   );
 }
 
+// SQLite's integrity check of Marquee's database. "alert" is shown above every
+// admin tab while the last check found problems; "status" is the one-line
+// result on the overview the rest of the time.
+function DatabaseHealthCard({ mode }: { mode: 'alert' | 'status' }) {
+  const queryClient = useQueryClient();
+  const { data: health } = useQuery({
+    queryKey: ['admin', 'db-health'],
+    queryFn: () => api<DbHealth>('/api/admin/db-health'),
+  });
+  const check = useMutation({
+    mutationFn: () => api<DbHealth>('/api/admin/db-health/check', { body: {} }),
+    onSuccess: (data) => {
+      // The banner on every page reads this from /api/version, and after a repair
+      // the admin lists (users especially) may have been showing partial data.
+      queryClient.invalidateQueries({ queryKey: ['version'] });
+      queryClient.invalidateQueries({ queryKey: ['admin'] });
+      queryClient.setQueryData(['admin', 'db-health'], data);
+    },
+  });
+  if (!health || (mode === 'alert') !== (health.ok === false)) return null;
+
+  const checked = health.checkedAt ? formatWhen(health.checkedAt) : null;
+  const checkButton = (
+    <button className="btn btn-ghost shrink-0" disabled={check.isPending} onClick={() => check.mutate()}>
+      {check.isPending ? 'Checking…' : 'Check now'}
+    </button>
+  );
+  const checkError = check.isError && (
+    <p className="text-sm text-crimson-500">
+      ✗ {check.error instanceof ApiError ? check.error.message : 'The check could not run'}
+    </p>
+  );
+
+  if (mode === 'status') {
+    return (
+      <section className="card space-y-2 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-stone-400">
+            <span className="text-stone-200">Database</span> ·{' '}
+            {health.ok ? `✓ healthy — checked ${checked}` : 'not checked yet'}
+          </p>
+          {checkButton}
+        </div>
+        {checkError}
+      </section>
+    );
+  }
+
+  // Every problem names an index: the data is intact and rebuilding the indexes fixes it.
+  const indexOnly = health.problems.every((p) => /\bindex\b/.test(p));
+  const count = `${health.problemCount}${health.problemCount >= 200 ? '+' : ''} problem${health.problemCount === 1 ? '' : 's'}`;
+  return (
+    <section className="card space-y-4 border-crimson-500/50 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-xs font-semibold tracking-widest text-crimson-500 uppercase">Database problems found</h2>
+          <p className="mt-1 text-sm text-stone-300">
+            SQLite’s integrity check found {count} in Marquee’s database ({checked}). Pages can silently leave out data
+            — like users — and new accounts can be created twice, so importing Plex users is paused until it’s fixed.
+          </p>
+        </div>
+        {checkButton}
+      </div>
+      {checkError}
+      <div className="space-y-1 text-sm text-stone-300">
+        <p className="font-medium text-stone-100">What to do</p>
+        <ol className="list-decimal space-y-1 pl-5">
+          <li>
+            Stop Marquee and back up its data folder — <code className="text-stone-200">marquee.db</code> and any{' '}
+            <code className="text-stone-200">-wal</code> / <code className="text-stone-200">-shm</code> files next to it.
+          </li>
+          {indexOnly ? (
+            <li>
+              Every problem is in an index, so the data itself is intact: rebuilding the indexes (SQLite’s{' '}
+              <code className="text-stone-200">REINDEX</code>) fixes it. If the rebuild fails with a UNIQUE error,
+              duplicate accounts slipped in while the index was damaged and need merging first.
+            </li>
+          ) : (
+            <li>
+              Some problems are in the data itself, not just indexes. Keep the backup, and restore an earlier copy of
+              the data folder (e.g. a NAS snapshot) if you have one.
+            </li>
+          )}
+          <li>Start Marquee and click “Check now” — this alert and the banner clear once the check passes.</li>
+        </ol>
+      </div>
+      <details className="text-xs text-stone-400">
+        <summary className="cursor-pointer text-stone-300">
+          What SQLite reported
+          {health.problemCount > health.problems.length ? ` (first ${health.problems.length})` : ''}
+        </summary>
+        <pre className="mt-2 max-h-60 overflow-auto rounded-lg bg-ink-950/60 p-3 whitespace-pre-wrap">
+          {health.problems.join('\n')}
+        </pre>
+      </details>
+    </section>
+  );
+}
+
 function StatCard({ label, value }: { label: string; value: number }) {
   return (
     <div className="card p-4 text-center">
@@ -630,6 +730,8 @@ export function Admin() {
         ))}
       </div>
 
+      <DatabaseHealthCard mode="alert" />
+
       {tab === 'overview' && stats && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
           <StatCard label="Users" value={stats.users} />
@@ -641,6 +743,7 @@ export function Admin() {
           <StatCard label="Open issues" value={stats.openIssues} />
         </div>
       )}
+      {tab === 'overview' && <DatabaseHealthCard mode="status" />}
 
       {tab === 'servers' && (
         <>

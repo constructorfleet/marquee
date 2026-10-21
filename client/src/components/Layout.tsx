@@ -40,6 +40,23 @@ function UpdateBanner({ version }: { version: VersionInfo }) {
   );
 }
 
+// Shown to admins on every page while the database check has found problems.
+// Not dismissible: damage like this once went unnoticed for months.
+function DatabaseBanner() {
+  return (
+    <div className="border-b border-crimson-500/40 bg-crimson-500/15">
+      <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
+        <span className="text-crimson-500">
+          ⚠ Marquee’s database check found problems — some accounts or data may not show up correctly.
+        </span>
+        <Link to="/admin" className="text-crimson-500 underline hover:text-stone-100">
+          Details
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-lg px-3 py-2 text-sm transition-colors ${
     isActive ? 'bg-neon-500/15 text-neon-300' : 'text-stone-400 hover:text-neon-300'
@@ -129,6 +146,7 @@ export function Layout() {
           </nav>
         )}
       </header>
+      {version?.databaseProblem && <DatabaseBanner />}
       {version && <UpdateBanner key={version.latest ?? 'none'} version={version} />}
       <main className="mx-auto max-w-5xl px-4 py-6 pb-16">
         <Outlet />

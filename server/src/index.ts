@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { runIntegrityCheck } from './db/health.js';
 import { closeDatabase, runMigrations } from './db/index.js';
 import { buildApp } from './app.js';
 import { startDiscordBot } from './discord/bot.js';
@@ -8,6 +9,8 @@ import { startUpdateChecker } from './updates.js';
 
 runMigrations();
 migrateSecretsAtRest();
+// Surface database damage on the admin page from the first request.
+runIntegrityCheck();
 
 const app = await buildApp();
 startScheduler();

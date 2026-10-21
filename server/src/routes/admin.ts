@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { db } from '../db/index.js';
 import { issueReports, lists, media, pollOptions, polls, users, votes } from '../db/schema.js';
 import { requireAdmin } from '../auth/plugin.js';
+import { getDbHealth, runIntegrityCheck } from '../db/health.js';
 import { clearOidcCache, getOidcConfiguration, getOidcSettings } from '../auth/oidc.js';
 import { startDiscordBot, testDiscord } from '../discord/bot.js';
 import { testJf } from '../jellyfin/client.js';
@@ -231,6 +232,14 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.code(502).send({ error: err instanceof Error ? err.message : 'Could not reach Emby' });
     }
   });
+
+  // Database integrity: the last result, or check again now.
+  app.get('/api/admin/db-health', { preHandler: requireAdmin }, async () => getDbHealth());
+  app.post(
+    '/api/admin/db-health/check',
+    { preHandler: requireAdmin, config: { rateLimit: { max: 6, timeWindow: '1 minute' } } },
+    async () => runIntegrityCheck(),
+  );
 
   // Sync every configured media server (Plex / Jellyfin / Emby).
   app.post('/api/admin/sync', { preHandler: requireAdmin }, async (_request, reply) => {

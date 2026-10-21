@@ -1,5 +1,6 @@
 import { Cron } from 'croner';
 import { and, eq, isNotNull, lte } from 'drizzle-orm';
+import { runIntegrityCheck } from './db/health.js';
 import { db } from './db/index.js';
 import { polls } from './db/schema.js';
 import { emitPollUpdate } from './events.js';
@@ -20,6 +21,11 @@ function openDuePolls(now: Date) {
   }
 }
 
+// Once a day in the early morning (server time), when nobody's voting.
+function dailyIntegrityCheck(now: Date) {
+  if (now.getHours() === 4 && now.getMinutes() === 30) runIntegrityCheck();
+}
+
 function closeDuePolls(now: Date) {
   const toClose = db
     .select()
@@ -30,8 +36,8 @@ function closeDuePolls(now: Date) {
 }
 
 // Every minute: open drafts whose opensAt has passed, close open polls whose
-// closesAt has passed, fire any due scheduled randomizer picks, and start the
-// automatic library sync when it's due. Each step is isolated so one failing
+// closesAt has passed, fire any due scheduled randomizer picks, start the
+// automatic library sync when it's due, and check the database once a day. Each step is isolated so one failing
 // (e.g. SQLITE_BUSY while a backup holds a lock) doesn't skip the others.
 export function startScheduler() {
   const steps: [string, (now: Date) => void][] = [
@@ -39,6 +45,7 @@ export function startScheduler() {
     ['library sync', runDueLibrarySync],
     ['open polls', openDuePolls],
     ['close polls', closeDuePolls],
+    ['integrity check', dailyIntegrityCheck],
   ];
   new Cron(
     '* * * * *',

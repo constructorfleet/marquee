@@ -14,6 +14,15 @@ sqlite.pragma('foreign_keys = ON');
 
 export const db = drizzle(sqlite, { schema });
 
+// SQLite's full integrity check, returning the problems it found ([] when
+// healthy). Deliberately not quick_check: that skips comparing each index with
+// its table, which is exactly the damage that once hid every user for months.
+export function checkIntegrity(maxProblems: number): string[] {
+  const rows = sqlite.pragma(`integrity_check(${maxProblems})`) as { integrity_check: string }[];
+  const problems = rows.map((r) => r.integrity_check);
+  return problems.length === 1 && problems[0] === 'ok' ? [] : problems;
+}
+
 // Checkpoints the WAL into the main file, so a stopped container leaves one tidy marquee.db.
 export function closeDatabase() {
   if (sqlite.open) sqlite.close();

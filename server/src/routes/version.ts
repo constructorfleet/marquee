@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { VersionInfo } from '@marquee/shared';
 import { config } from '../config.js';
 import { requireUser } from '../auth/plugin.js';
+import { databaseHasProblems } from '../db/health.js';
 import { getUpdateInfo, REPO_URL } from '../updates.js';
 
 export async function versionRoutes(app: FastifyInstance) {
@@ -14,6 +15,8 @@ export async function versionRoutes(app: FastifyInstance) {
       updateAvailable: latest !== null,
       latest: latest?.version ?? null,
       releaseUrl: latest?.url ?? null,
+      // Every page shows admins a banner while this is set.
+      databaseProblem: request.user!.isAdmin && databaseHasProblems(),
     };
   });
 }

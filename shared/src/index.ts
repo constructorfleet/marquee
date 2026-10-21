@@ -32,6 +32,17 @@ export interface VersionInfo {
   updateAvailable: boolean;
   latest: string | null;
   releaseUrl: string | null;
+  // Admins only: the last database integrity check found problems.
+  databaseProblem: boolean;
+}
+
+// Result of SQLite's integrity check on Marquee's database (admin only).
+export interface DbHealth {
+  ok: boolean | null; // null until the first check has run
+  checkedAt: string | null;
+  durationMs: number | null;
+  problemCount: number;
+  problems: string[]; // the first few, as SQLite worded them
 }
 
 export type MediaType = 'movie' | 'show';
