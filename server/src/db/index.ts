@@ -14,6 +14,11 @@ sqlite.pragma('foreign_keys = ON');
 
 export const db = drizzle(sqlite, { schema });
 
+// Checkpoints the WAL into the main file, so a stopped container leaves one tidy marquee.db.
+export function closeDatabase() {
+  if (sqlite.open) sqlite.close();
+}
+
 export function runMigrations() {
   // Works from both src (tsx) and dist (compiled): the drizzle folder sits at the server root.
   migrate(db, { migrationsFolder: path.join(import.meta.dirname, '../../drizzle') });

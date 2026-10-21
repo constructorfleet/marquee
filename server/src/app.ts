@@ -31,9 +31,20 @@ import { widgetRoutes } from './routes/widget.js';
 export async function buildApp() {
   const app = Fastify({
     loggerInstance: logger,
-    // Honor X-Forwarded-* from the reverse proxy (needed for secure cookies + rate-limit IPs).
-    // Configurable via TRUST_PROXY so a directly-exposed deployment can turn it off.
+    // Which reverse proxies' X-Forwarded-* to believe (secure cookies + rate-limit IPs); see config.ts.
     trustProxy: config.trustProxy,
+    // Drop open connections on shutdown, including live-result streams that never end on their own.
+    forceCloseConnections: true,
+  });
+
+  // Must come before any route is registered: Fastify fixes each route's error
+  // handler at registration, so routes added earlier would keep the default one
+  // and send raw internal error messages (e.g. SQLite errors) to clients.
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
+    if (status >= 500) request.log.error(error);
+    else request.log.info({ err: error.message, status }, 'request rejected');
+    reply.code(status).send({ error: status === 500 ? 'Internal server error' : error.message });
   });
 
   await app.register(fastifyHelmet, {
@@ -64,12 +75,6 @@ export async function buildApp() {
   await app.register(widgetRoutes);
 
   app.get('/api/health', async () => ({ ok: true, version: config.version }));
-
-  app.setErrorHandler((error: FastifyError, _request, reply) => {
-    app.log.error(error);
-    const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
-    reply.code(status).send({ error: status === 500 ? 'Internal server error' : error.message });
-  });
 
   // In production the server also serves the built client (SPA fallback for client routes).
   const clientDist = path.join(import.meta.dirname, '../../client/dist');

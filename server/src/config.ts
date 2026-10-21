@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { logger } from './logger.js';
 
 // Anchor the default data dir to the server package itself (src/ and dist/ both sit
 // one level below it) — NOT the process cwd. Launching from a different directory
@@ -20,17 +21,28 @@ function loadSessionSecret(): string {
   return secret;
 }
 
-// How much to trust X-Forwarded-* headers. Defaults to true (the documented
-// deployment sits behind a reverse proxy that sets them). Set TRUST_PROXY=false
-// when exposing the server directly, otherwise a client can spoof its source IP
-// via X-Forwarded-For and defeat the per-IP auth rate limits. Also accepts a hop
-// count or a comma-separated IP/CIDR allowlist, passed through to Fastify.
-function parseTrustProxy(v: string | undefined): boolean | number | string {
-  if (v === undefined || v === '') return true;
+// Which reverse proxies' X-Forwarded-* headers to believe (client IP for the
+// per-IP rate limits, and https detection for secure cookies). By default, any
+// proxy on a loopback or private address — where a self-hosted proxy lives (same
+// host, Docker network or LAN). The client IP is then the right-most public
+// address in X-Forwarded-For, which clients can't forge; a directly exposed
+// server ignores the header entirely. `true` trusts the whole header, and since
+// nginx, SWAG and Cloudflare pass a client-supplied X-Forwarded-For through,
+// anyone could then pick their own IP. Also accepts a comma-separated IP/CIDR
+// list (e.g. to add Cloudflare's ranges in front of nginx) or false.
+const PRIVATE_NETWORKS = 'loopback,linklocal,uniquelocal';
+
+function parseTrustProxy(v: string | undefined): boolean | string {
+  if (v === undefined || v === '') return PRIVATE_NETWORKS;
   if (v === 'true') return true;
   if (v === 'false') return false;
-  const n = Number(v);
-  return Number.isInteger(n) ? n : v;
+  if (/^\d+$/.test(v)) {
+    // Fastify 5.12+ treats a hop count as "trust nothing" (it can't tell a proxy
+    // from a client), which would put every user behind one proxy IP.
+    logger.warn({ TRUST_PROXY: v }, 'TRUST_PROXY hop counts are no longer supported; trusting private networks instead');
+    return PRIVATE_NETWORKS;
+  }
+  return v;
 }
 
 // Idle auto-logout windows, in minutes. Admins get a shorter window than

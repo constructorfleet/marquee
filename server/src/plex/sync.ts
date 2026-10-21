@@ -1,4 +1,5 @@
 import { getPlexConfig, setSetting } from '../settings.js';
+import { mapLimit } from '../sources/mapLimit.js';
 import type { NormalizedCollection, NormalizedItem, SourceSyncData } from '../sources/types.js';
 import {
   getCollectionChildren,
@@ -42,7 +43,9 @@ function normalizeItem(item: PlexItem, sectionTitle: string): NormalizedItem {
   };
 }
 
-// Fetch everything from Plex up front (collection members in parallel); the
+const COLLECTION_CONCURRENCY = 8;
+
+// Fetch everything from Plex up front (collection members a few at a time); the
 // generic writer persists it afterwards in a single transaction.
 export async function fetchPlexData(): Promise<SourceSyncData> {
   const cfg = getPlexConfig();
@@ -72,8 +75,8 @@ export async function fetchPlexData(): Promise<SourceSyncData> {
     } catch {
       continue;
     }
-    const children = await Promise.all(
-      plexCollections.map((c) => getCollectionChildren(cfg.url, cfg.token, c.ratingKey).catch(() => [])),
+    const children = await mapLimit(plexCollections, COLLECTION_CONCURRENCY, (c) =>
+      getCollectionChildren(cfg.url, cfg.token, c.ratingKey).catch(() => []),
     );
     plexCollections.forEach((c, i) => {
       collections.push({

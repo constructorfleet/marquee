@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { and, desc, eq, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import { media, pollOptions, polls, votes } from '../db/schema.js';
@@ -14,6 +14,9 @@ import {
   optionFromMedia,
   serializePollDetail,
 } from '../polls/service.js';
+
+// Posting to Discord speaks as the bot in a shared channel, so keep it slow.
+const DISCORD_POST_RATE = { rateLimit: { max: 10, timeWindow: '1 minute' } };
 
 const createPollSchema = z.object({
   title: z.string().min(1, 'Title is required').max(200),
@@ -225,7 +228,7 @@ export async function pollRoutes(app: FastifyInstance) {
   });
 
   // Post this poll to the configured Discord channel with vote buttons.
-  app.post('/api/polls/:token/discord', { preHandler: requireUser }, async (request, reply) => {
+  app.post('/api/polls/:token/discord', { preHandler: requireUser, config: DISCORD_POST_RATE }, async (request, reply) => {
     const { token } = request.params as { token: string };
     const poll = pollByToken(token);
     if (!poll) return reply.code(404).send({ error: 'Poll not found' });

@@ -110,11 +110,16 @@ export async function scheduleRoutes(app: FastifyInstance) {
   });
 
   // Run right now, regardless of the schedule. Returns the pick.
-  app.post('/api/schedules/:id/run', { preHandler: requireUser }, async (request, reply) => {
-    const row = ownSchedule(Number((request.params as { id: string }).id), request.user!.id, request.user!.isAdmin);
-    if (!row) return reply.code(404).send({ error: 'Schedule not found' });
-    const pick = await runSchedule(row);
-    if (!pick) return reply.code(404).send({ error: 'No titles match this schedule’s filters' });
-    return serializeMedia(pick);
-  });
+  // A manual run can announce on Discord, so it's rate-limited like posting a poll there.
+  app.post(
+    '/api/schedules/:id/run',
+    { preHandler: requireUser, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const row = ownSchedule(Number((request.params as { id: string }).id), request.user!.id, request.user!.isAdmin);
+      if (!row) return reply.code(404).send({ error: 'Schedule not found' });
+      const pick = await runSchedule(row);
+      if (!pick) return reply.code(404).send({ error: 'No titles match this schedule’s filters' });
+      return serializeMedia(pick);
+    },
+  );
 }

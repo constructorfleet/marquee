@@ -94,7 +94,7 @@ Open the app, create the first admin account, then in **Admin → Media servers*
 | `DATABASE_PATH` | `$DATA_DIR/marquee.db` | SQLite file location |
 | `SESSION_SECRET` | auto-generated, persisted in `$DATA_DIR` | Cookie signing + secrets-at-rest key |
 | `LOG_LEVEL` | `info` (prod) / `debug` (dev) | `trace`–`error` |
-| `TRUST_PROXY` | `true` | Trust `X-Forwarded-*` from a reverse proxy. Set `false` if exposing the server directly (prevents client IP spoofing that would bypass login rate limits). Also accepts a hop count or IP/CIDR allowlist. |
+| `TRUST_PROXY` | private networks | Which reverse proxies to trust for `X-Forwarded-*` (client IP for rate limits, https detection). The default trusts proxies on loopback/private addresses — a proxy on the same host, Docker network or LAN — and works unchanged when the server is exposed directly. Set a comma-separated IP/CIDR list to trust other proxies, e.g. add [Cloudflare's ranges](https://www.cloudflare.com/ips/) when it sits in front of your proxy. Hop counts are no longer supported. Avoid `true`: it trusts the whole header, letting clients spoof their IP. |
 | `ADMIN_IDLE_MINUTES` | `120` | Minutes of inactivity before an **admin** session is auto-logged-out |
 | `USER_IDLE_MINUTES` | `360` | Minutes of inactivity before a regular **user** session is auto-logged-out |
 | `TZ` | `UTC` (Docker) | Time zone for daily library syncs and scheduled randomizer picks, e.g. `America/New_York` |

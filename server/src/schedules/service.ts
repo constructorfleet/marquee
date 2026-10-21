@@ -34,6 +34,11 @@ export async function runSchedule(row: ScheduleRow): Promise<typeof media.$infer
   return pick;
 }
 
+// Schedules whose pick is still being drawn. A pick can outlast a scheduler tick
+// (e.g. an unwatched-only draw walking a slow Plex library), and a one-shot is
+// only disabled once it finishes — without this it would fire again next minute.
+const inFlight = new Set<number>();
+
 // Called every minute by the scheduler.
 export function runDueSchedules(now: Date): void {
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -46,6 +51,10 @@ export function runDueSchedules(now: Date): void {
           // restart guard: never run the same weekly twice inside one minute window
           (!row.lastRunAt || now.getTime() - row.lastRunAt.getTime() > 90_000)
         : row.runAt !== null && row.runAt.getTime() <= now.getTime();
-    if (due) void runSchedule(row);
+    if (!due || inFlight.has(row.id)) continue;
+    inFlight.add(row.id);
+    runSchedule(row)
+      .catch((err) => logger.error({ err, schedule: row.name }, 'scheduled pick failed'))
+      .finally(() => inFlight.delete(row.id));
   }
 }

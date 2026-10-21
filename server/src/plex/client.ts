@@ -34,9 +34,18 @@ function plexUrl(baseUrl: string, pathname: string): URL {
   return new URL(pathname, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`);
 }
 
-async function plexGet<T>(baseUrl: string, token: string, pathname: string): Promise<T> {
+// Without these, a stalled server holds each request for undici's 300 s header
+// and body timeouts — and a sync makes dozens of requests while holding the
+// "already running" guard. A whole-library listing is one large response, so
+// it gets longer for big libraries on slow disks.
+const REQUEST_TIMEOUT_MS = 30_000;
+const LIBRARY_TIMEOUT_MS = 5 * 60_000;
+const ARTWORK_TIMEOUT_MS = 15_000;
+
+async function plexGet<T>(baseUrl: string, token: string, pathname: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const res = await fetch(plexUrl(baseUrl, pathname), {
     headers: { 'X-Plex-Token': token, Accept: 'application/json' },
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`Plex request failed (${res.status} ${res.statusText})`);
   return res.json() as Promise<T>;
@@ -62,6 +71,7 @@ export async function getSectionItems(baseUrl: string, token: string, sectionKey
     baseUrl,
     token,
     `library/sections/${encodeURIComponent(sectionKey)}/all?includeGuids=1`,
+    LIBRARY_TIMEOUT_MS,
   );
   return json?.MediaContainer?.Metadata ?? [];
 }
@@ -126,5 +136,5 @@ export async function fetchArtwork(baseUrl: string, token: string, thumbPath: st
   // path would otherwise let new URL() redirect the token-bearing request off-box.
   if (url.origin !== base.origin) throw new Error('refusing to fetch artwork from an unexpected host');
   url.searchParams.set('X-Plex-Token', token);
-  return fetch(url);
+  return fetch(url, { signal: AbortSignal.timeout(ARTWORK_TIMEOUT_MS) });
 }

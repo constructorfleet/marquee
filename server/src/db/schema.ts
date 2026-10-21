@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -37,16 +37,21 @@ export const passkeys = sqliteTable('passkeys', {
   lastUsedAt: integer('last_used_at', { mode: 'timestamp' }),
 });
 
-export const sessions = sqliteTable('sessions', {
-  token: text('token').primaryKey(),
-  userId: integer('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
-  // Last request seen on this session, for idle auto-logout. Nullable so the
-  // migration is a plain ADD COLUMN; the auth hook initializes it on first use.
-  lastSeenAt: integer('last_seen_at', { mode: 'timestamp' }),
-});
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    token: text('token').primaryKey(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+    // Last request seen on this session, for idle auto-logout. Nullable so the
+    // migration is a plain ADD COLUMN; the auth hook initializes it on first use.
+    lastSeenAt: integer('last_seen_at', { mode: 'timestamp' }),
+  },
+  // Password resets and user deletes look sessions up by user.
+  (t) => [index('sessions_user_id_idx').on(t.userId)],
+);
 
 // Instance settings managed from the admin UI (Plex URL/token, future OIDC config).
 export const settings = sqliteTable('settings', {
@@ -143,15 +148,20 @@ export const polls = sqliteTable('polls', {
     .$defaultFn(() => new Date()),
 });
 
-export const pollOptions = sqliteTable('poll_options', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  pollId: integer('poll_id')
-    .notNull()
-    .references(() => polls.id, { onDelete: 'cascade' }),
-  mediaId: integer('media_id').references(() => media.id),
-  title: text('title').notNull(),
-  thumb: text('thumb'),
-});
+export const pollOptions = sqliteTable(
+  'poll_options',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    pollId: integer('poll_id')
+      .notNull()
+      .references(() => polls.id, { onDelete: 'cascade' }),
+    mediaId: integer('media_id').references(() => media.id),
+    title: text('title').notNull(),
+    thumb: text('thumb'),
+  },
+  // Every poll view and the poll list load options by poll.
+  (t) => [index('poll_options_poll_id_idx').on(t.pollId)],
+);
 
 export const votes = sqliteTable(
   'votes',
@@ -172,8 +182,13 @@ export const votes = sqliteTable(
       .notNull()
       .$defaultFn(() => new Date()),
   },
-  // One vote per user per poll, enforced by the database.
-  (t) => [uniqueIndex('votes_poll_user_unique').on(t.pollId, t.userId)],
+  (t) => [
+    // One vote per user per poll, enforced by the database.
+    uniqueIndex('votes_poll_user_unique').on(t.pollId, t.userId),
+    // A guest's last-used name is looked up by user; deleting an option or a user cascades by these.
+    index('votes_user_id_idx').on(t.userId),
+    index('votes_option_id_idx').on(t.optionId),
+  ],
 );
 
 export const lists = sqliteTable('lists', {

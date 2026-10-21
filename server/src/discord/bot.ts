@@ -46,7 +46,12 @@ export async function startDiscordBot(): Promise<void> {
   const token = getSetting('discord.botToken');
   if (!token) return;
 
-  const c = new Client({ intents: [GatewayIntentBits.Guilds] });
+  const c = new Client({
+    intents: [GatewayIntentBits.Guilds],
+    // Poll, option and schedule names are user-written text: never let them ping
+    // @everyone, @here, roles or users through the bot.
+    allowedMentions: { parse: [] },
+  });
   c.on(Events.ClientReady, (ready) => {
     botUser = ready.user.tag;
     logger.info({ botUser }, 'discord bot connected');
@@ -140,6 +145,8 @@ export async function postPollToDiscord(pollId: number): Promise<void> {
   const poll = db.select().from(polls).where(eq(polls.id, pollId)).get();
   if (!poll) throw new Error('Poll not found');
   if (poll.status !== 'open') throw new Error('Open the poll before posting it to Discord');
+  // One message per poll; reposting is only allowed once the old message is gone.
+  if (await fetchPollMessage(poll)) throw new Error('This poll is already posted on Discord');
   const options = getOptions(poll.id);
   if (options.length > DISCORD_MAX_OPTIONS) {
     throw new Error(`Discord supports at most ${DISCORD_MAX_OPTIONS} options per poll`);

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { db } from '../db/index.js';
 import { collectionItems, collections, media } from '../db/schema.js';
 import { requireUser } from '../auth/plugin.js';
-import { fetchJfArtwork } from '../jellyfin/client.js';
+import { fetchJfArtwork, getJfConfig } from '../jellyfin/client.js';
 import { fetchArtwork } from '../plex/client.js';
 import { pickRandomMedia } from '../randomizer/service.js';
 import { getPlexConfig, getSetting } from '../settings.js';
@@ -57,19 +57,27 @@ export async function streamPoster(
   cacheControl: string,
 ) {
   if (!item.thumb) return reply.code(404).send({ error: 'No poster available' });
-  let res: Response;
+  let request: () => Promise<Response>;
   if (item.source === 'plex') {
     const cfg = getPlexConfig();
     if (!cfg) return reply.code(404).send({ error: 'Plex is not configured' });
-    res = await fetchArtwork(cfg.url, cfg.token, item.thumb);
+    request = () => fetchArtwork(cfg.url, cfg.token, item.thumb!);
   } else {
-    try {
-      res = await fetchJfArtwork(item.source, item.thumb);
-    } catch (err) {
-      return reply.code(404).send({ error: err instanceof Error ? err.message : 'Source not configured' });
-    }
+    const kind = item.source;
+    if (!getJfConfig(kind)) return reply.code(404).send({ error: `${kind} is not configured` });
+    request = () => fetchJfArtwork(kind, item.thumb!);
   }
-  if (!res.ok) return reply.code(502).send({ error: 'Failed to fetch poster from the media server' });
+  let res: Response;
+  try {
+    res = await request();
+  } catch {
+    // Unreachable or too slow: the client falls back to a placeholder, so this isn't a server error.
+    return reply.code(502).send({ error: 'Failed to fetch poster from the media server' });
+  }
+  if (!res.ok) {
+    void res.body?.cancel();
+    return reply.code(502).send({ error: 'Failed to fetch poster from the media server' });
+  }
   reply.header('content-type', res.headers.get('content-type') ?? 'image/jpeg');
   reply.header('cache-control', cacheControl);
   return reply.send(Buffer.from(await res.arrayBuffer()));

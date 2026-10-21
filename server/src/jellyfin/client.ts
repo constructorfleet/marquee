@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { getSetting, setSetting } from '../settings.js';
+import { mapLimit } from '../sources/mapLimit.js';
 import type { NormalizedCollection, NormalizedItem, SourceSyncData } from '../sources/types.js';
 
 // Jellyfin and Emby share (essentially) one API — Jellyfin forked from Emby —
@@ -18,10 +19,18 @@ function base(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
-async function jfGet<T>(cfg: { url: string; apiKey: string }, path: string, timeoutMs?: number): Promise<T> {
+// Without these, a stalled server holds each request for undici's 300 s header
+// and body timeouts, all while a sync holds its "already running" guard. A
+// whole-library listing is one large response, so it gets longer.
+const REQUEST_TIMEOUT_MS = 30_000;
+const LIBRARY_TIMEOUT_MS = 5 * 60_000;
+const ARTWORK_TIMEOUT_MS = 15_000;
+const COLLECTION_CONCURRENCY = 8;
+
+async function jfGet<T>(cfg: { url: string; apiKey: string }, path: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const res = await fetch(`${base(cfg.url)}${path}`, {
     headers: { 'X-Emby-Token': cfg.apiKey, Accept: 'application/json' },
-    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status === 401) throw new Error('The server rejected the API key');
   if (!res.ok) throw new Error(`Request failed (${res.status} ${res.statusText})`);
@@ -124,6 +133,7 @@ export async function fetchJfData(kind: JfKind): Promise<SourceSyncData> {
     const res = await jfGet<JfItemsResponse>(
       cfg,
       `/Users/${userId}/Items?ParentId=${encodeURIComponent(view.Id)}&Recursive=true&IncludeItemTypes=Movie,Series&Fields=${ITEM_FIELDS}`,
+      LIBRARY_TIMEOUT_MS,
     );
     for (const item of res.Items ?? []) {
       if (item.Type !== 'Movie' && item.Type !== 'Series') continue;
@@ -138,11 +148,9 @@ export async function fetchJfData(kind: JfKind): Promise<SourceSyncData> {
       cfg,
       `/Users/${userId}/Items?IncludeItemTypes=BoxSet&Recursive=true`,
     );
-    const children = await Promise.all(
-      (boxSets.Items ?? []).map((b) =>
-        jfGet<JfItemsResponse>(cfg, `/Users/${userId}/Items?ParentId=${encodeURIComponent(b.Id)}`).catch(
-          () => ({ Items: [] as JfItem[] }),
-        ),
+    const children = await mapLimit(boxSets.Items ?? [], COLLECTION_CONCURRENCY, (b) =>
+      jfGet<JfItemsResponse>(cfg, `/Users/${userId}/Items?ParentId=${encodeURIComponent(b.Id)}`).catch(
+        () => ({ Items: [] as JfItem[] }),
       ),
     );
     (boxSets.Items ?? []).forEach((b, i) => {
@@ -188,6 +196,7 @@ export async function fetchJfArtwork(kind: JfKind, itemId: string): Promise<Resp
   if (!cfg) throw new Error(`${kind} is not configured`);
   return fetch(`${base(cfg.url)}/Items/${encodeURIComponent(itemId)}/Images/Primary?maxWidth=600`, {
     headers: { 'X-Emby-Token': cfg.apiKey },
+    signal: AbortSignal.timeout(ARTWORK_TIMEOUT_MS),
   });
 }
 
