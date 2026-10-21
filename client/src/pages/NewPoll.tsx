@@ -11,6 +11,7 @@ export function NewPoll() {
   const [description, setDescription] = useState('');
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<MediaItem[]>([]);
+  const [opensAt, setOpensAt] = useState('');
   const [closesAt, setClosesAt] = useState('');
   const [openNow, setOpenNow] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +67,7 @@ export function NewPoll() {
           title,
           description: description || undefined,
           mediaIds: selected.map((m) => m.id),
+          opensAt: opensAt ? new Date(opensAt).toISOString() : undefined,
           closesAt: closesAt ? new Date(closesAt).toISOString() : undefined,
           openNow,
         },
@@ -95,9 +97,30 @@ export function NewPoll() {
           onChange={(e) => setDescription(e.target.value)}
         />
         <div className="flex flex-wrap items-center gap-4">
+          {/* "Open now" and a scheduled open are exclusive — each clears the other. */}
           <label className="flex items-center gap-2 text-sm text-stone-300">
-            <input type="checkbox" checked={openNow} onChange={(e) => setOpenNow(e.target.checked)} className="accent-neon-400" />
+            <input
+              type="checkbox"
+              checked={openNow}
+              onChange={(e) => {
+                setOpenNow(e.target.checked);
+                if (e.target.checked) setOpensAt('');
+              }}
+              className="accent-neon-400"
+            />
             Open voting immediately
+          </label>
+          <label className="flex items-center gap-2 text-sm text-stone-300">
+            Auto-open at
+            <input
+              type="datetime-local"
+              className="input w-auto"
+              value={opensAt}
+              onChange={(e) => {
+                setOpensAt(e.target.value);
+                if (e.target.value) setOpenNow(false);
+              }}
+            />
           </label>
           <label className="flex items-center gap-2 text-sm text-stone-300">
             Auto-close at

@@ -12,28 +12,34 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import { passkeys, users } from '../db/schema.js';
-import { createSession, requireUser } from '../auth/plugin.js';
-import { getSetting } from '../settings.js';
+import { cookieSecure, createSession, publicOrigin, requireUser } from '../auth/plugin.js';
 
 // WebAuthn passkeys: any signed-in user can register one from the Account page;
 // the login page then offers usernameless (discoverable-credential) sign-in.
 
 const CHALLENGE_COOKIE = 'marquee_webauthn';
+// Options endpoints do real crypto work; cap them like the credential endpoints.
+const AUTH_RATE = { rateLimit: { max: 10, timeWindow: '1 minute' } };
 
-// The relying-party id/origin must match what the browser sees. Prefer the
-// admin-configured public URL; fall back to the request's own host (dev).
-function rpContext(request: FastifyRequest): { origin: string; rpID: string } {
-  const appUrl = getSetting('app.url');
-  const origin = appUrl ? appUrl.replace(/\/+$/, '') : `${request.protocol}://${request.headers.host}`;
-  return { origin, rpID: new URL(origin).hostname };
+// The relying-party id/origin must match what the browser sees, and must come
+// from app.url: deriving it from the Host header makes the origin check
+// self-referential (the caller states the origin it is then checked against),
+// and a malformed Host turns the URL parse into a 500. No fallback — passkeys
+// are an extra sign-in method, so failing closed can't lock anyone out.
+const RP_UNSET = 'Set the public app URL in Admin settings first — passkeys are tied to a fixed domain';
+
+function rpContext(): { origin: string; rpID: string } | null {
+  const origin = publicOrigin();
+  return origin ? { origin, rpID: new URL(origin).hostname } : null;
 }
 
-function setChallenge(reply: FastifyReply, kind: 'reg' | 'auth', challenge: string) {
+function setChallenge(request: FastifyRequest, reply: FastifyReply, kind: 'reg' | 'auth', challenge: string) {
   reply.setCookie(CHALLENGE_COOKIE, JSON.stringify({ kind, challenge }), {
     path: '/api',
     httpOnly: true,
     sameSite: 'lax',
     signed: true,
+    secure: cookieSecure(request),
     maxAge: 300,
   });
 }
@@ -66,8 +72,10 @@ export async function passkeyRoutes(app: FastifyInstance) {
       .all();
   });
 
-  app.post('/api/passkeys/register/options', { preHandler: requireUser }, async (request, reply) => {
-    const { rpID } = rpContext(request);
+  app.post('/api/passkeys/register/options', { config: AUTH_RATE, preHandler: requireUser }, async (request, reply) => {
+    const rp = rpContext();
+    if (!rp) return reply.code(503).send({ error: RP_UNSET });
+    const { rpID } = rp;
     const existing = db.select().from(passkeys).where(eq(passkeys.userId, request.user!.id)).all();
     const options = await generateRegistrationOptions({
       rpName: 'Marquee',
@@ -81,19 +89,21 @@ export async function passkeyRoutes(app: FastifyInstance) {
         transports: c.transports ? (JSON.parse(c.transports) as never[]) : undefined,
       })),
     });
-    setChallenge(reply, 'reg', options.challenge);
+    setChallenge(request, reply, 'reg', options.challenge);
     return options;
   });
 
-  app.post('/api/passkeys/register/verify', { preHandler: requireUser }, async (request, reply) => {
+  app.post('/api/passkeys/register/verify', { config: AUTH_RATE, preHandler: requireUser }, async (request, reply) => {
     const parsed = z
       .object({ name: z.string().max(60).optional(), response: z.unknown() })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
+    const rp = rpContext();
+    if (!rp) return reply.code(503).send({ error: RP_UNSET });
     const expectedChallenge = takeChallenge(request, reply, 'reg');
     if (!expectedChallenge) return reply.code(400).send({ error: 'Registration session expired — try again' });
 
-    const { origin, rpID } = rpContext(request);
+    const { origin, rpID } = rp;
     let verification;
     try {
       verification = await verifyRegistrationResponse({
@@ -110,7 +120,22 @@ export async function passkeyRoutes(app: FastifyInstance) {
     }
 
     const cred = verification.registrationInfo.credential;
-    db.insert(passkeys)
+    // excludeCredentials only lists this user's keys, so an authenticator
+    // holding a credential for another Marquee account (recreated account,
+    // shared device, hardware key) happily reuses it. Signing in with it would
+    // then land on that other account, so say so instead of reporting a
+    // success that stored nothing.
+    const claimed = db.select({ userId: passkeys.userId }).from(passkeys).where(eq(passkeys.credentialId, cred.id)).get();
+    const conflict = (mine: boolean) =>
+      reply.code(409).send({
+        error: mine
+          ? 'That passkey is already on your account'
+          : 'That passkey is already registered to another account on this server — remove it there, or create a new one',
+      });
+    if (claimed) return conflict(claimed.userId === request.user!.id);
+
+    const inserted = db
+      .insert(passkeys)
       .values({
         userId: request.user!.id,
         credentialId: cred.id,
@@ -119,8 +144,9 @@ export async function passkeyRoutes(app: FastifyInstance) {
         transports: cred.transports ? JSON.stringify(cred.transports) : null,
         name: parsed.data.name?.trim() || 'Passkey',
       })
-      .onConflictDoNothing()
-      .run();
+      .onConflictDoNothing() // backstop for a concurrent duplicate registration
+      .run().changes;
+    if (inserted === 0) return conflict(false);
     return reply.code(201).send({ ok: true });
   });
 
@@ -138,15 +164,18 @@ export async function passkeyRoutes(app: FastifyInstance) {
 
   // Login step 1: authentication options with no allowCredentials — the browser
   // offers whatever discoverable credentials it holds for this site.
-  app.post('/api/auth/passkey/options', async (request, reply) => {
-    const { rpID } = rpContext(request);
-    const options = await generateAuthenticationOptions({ rpID, userVerification: 'preferred' });
-    setChallenge(reply, 'auth', options.challenge);
+  app.post('/api/auth/passkey/options', { config: AUTH_RATE }, async (request, reply) => {
+    const rp = rpContext();
+    if (!rp) return reply.code(503).send({ error: RP_UNSET });
+    const options = await generateAuthenticationOptions({ rpID: rp.rpID, userVerification: 'preferred' });
+    setChallenge(request, reply, 'auth', options.challenge);
     return options;
   });
 
   // Login step 2: verify the assertion and start a session.
-  app.post('/api/auth/passkey/verify', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+  app.post('/api/auth/passkey/verify', { config: AUTH_RATE }, async (request, reply) => {
+    const rp = rpContext();
+    if (!rp) return reply.code(503).send({ error: RP_UNSET });
     const expectedChallenge = takeChallenge(request, reply, 'auth');
     if (!expectedChallenge) return reply.code(400).send({ error: 'Sign-in session expired — try again' });
     const response = request.body as AuthenticationResponseJSON;
@@ -155,7 +184,7 @@ export async function passkeyRoutes(app: FastifyInstance) {
     const cred = db.select().from(passkeys).where(eq(passkeys.credentialId, response.id)).get();
     if (!cred) return reply.code(401).send({ error: 'Unknown passkey' });
 
-    const { origin, rpID } = rpContext(request);
+    const { origin, rpID } = rp;
     let verification;
     try {
       verification = await verifyAuthenticationResponse({

@@ -83,7 +83,12 @@ export interface WatchlistItem {
 export async function fetchWatchlist(token: string): Promise<WatchlistItem[]> {
   const url = new URL('https://discover.provider.plex.tv/library/sections/watchlist/all');
   url.searchParams.set('includeGuids', '1');
-  const res = await fetch(url, { headers: { 'X-Plex-Token': token, Accept: 'application/json' } });
+  const res = await fetch(url, {
+    headers: { 'X-Plex-Token': token, Accept: 'application/json' },
+    // Two of these run concurrently per request; without it a stalled plex.tv
+    // holds the caller for undici's 300 s header and body timeouts.
+    signal: AbortSignal.timeout(15_000),
+  });
   if (!res.ok) throw new Error(`plex.tv watchlist request failed (${res.status})`);
   const json = (await res.json()) as {
     MediaContainer?: { Metadata?: { title: string; year?: number; type?: string; Guid?: { id: string }[] }[] };

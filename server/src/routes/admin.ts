@@ -8,6 +8,7 @@ import { issueReports, lists, media, pollOptions, polls, users, votes } from '..
 import { requireAdmin } from '../auth/plugin.js';
 import { getDbHealth, runIntegrityCheck } from '../db/health.js';
 import { clearOidcCache, getOidcConfiguration, getOidcSettings } from '../auth/oidc.js';
+import { registrationOpen } from '../auth/routes.js';
 import { startDiscordBot, testDiscord } from '../discord/bot.js';
 import { testJf } from '../jellyfin/client.js';
 import { getSections } from '../plex/client.js';
@@ -81,7 +82,7 @@ export async function adminRoutes(app: FastifyInstance) {
     seerrUrl: getSetting('seerr.url'),
     seerrKind: getSetting('seerr.kind') === 'ombi' ? ('ombi' as const) : ('overseerr' as const),
     seerrKeySet: !!getSetting('seerr.apiKey'),
-    allowRegistration: getSetting('auth.allowRegistration') !== 'false',
+    allowRegistration: registrationOpen(),
     widgetKeySet: !!getSetting('widget.apiKey'),
     ...syncStatus(),
   });

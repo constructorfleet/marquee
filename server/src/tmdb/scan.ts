@@ -101,22 +101,32 @@ async function runScan(key: string, pending: { id: number; tmdbId: string | null
     const all = db.select().from(tmdbCollections).all();
     state.franchisesFound = all.length;
     for (const col of all) {
-      const parts = await getCollectionParts(col.tmdbId, key);
-      db.transaction((tx) => {
-        tx.delete(tmdbCollectionParts).where(eq(tmdbCollectionParts.collectionId, col.id)).run();
-        for (const p of parts) {
-          tx.insert(tmdbCollectionParts)
-            .values({
-              collectionId: col.id,
-              tmdbMovieId: String(p.id),
-              title: p.title,
-              year: p.release_date ? Number(p.release_date.slice(0, 4)) : null,
-              posterPath: p.poster_path ?? null,
-            })
-            .onConflictDoNothing()
-            .run();
-        }
-      });
+      // TMDb rate-limits this unthrottled loop, so one bad collection must cost
+      // that collection only — the rest keep their existing parts and the next
+      // scan retries every collection anyway.
+      try {
+        const parts = await getCollectionParts(col.tmdbId, key);
+        db.transaction((tx) => {
+          tx.delete(tmdbCollectionParts).where(eq(tmdbCollectionParts.collectionId, col.id)).run();
+          for (const p of parts) {
+            tx.insert(tmdbCollectionParts)
+              .values({
+                collectionId: col.id,
+                tmdbMovieId: String(p.id),
+                title: p.title,
+                year: p.release_date ? Number(p.release_date.slice(0, 4)) : null,
+                posterPath: p.poster_path ?? null,
+              })
+              .onConflictDoNothing()
+              .run();
+          }
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes('API key')) throw err;
+        state.errors++;
+        state.lastError = message;
+      }
     }
   } catch (err) {
     state.lastError = err instanceof Error ? err.message : String(err);

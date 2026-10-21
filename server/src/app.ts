@@ -5,7 +5,7 @@ import fastifyCookie from '@fastify/cookie';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
-import { config } from './config.js';
+import { config, warnIfProxyTrustIsLoose } from './config.js';
 import { logger } from './logger.js';
 import { authPlugin } from './auth/plugin.js';
 import { authRoutes } from './auth/routes.js';
@@ -29,6 +29,7 @@ import { watchWithRoutes } from './routes/watchwith.js';
 import { widgetRoutes } from './routes/widget.js';
 
 export async function buildApp() {
+  warnIfProxyTrustIsLoose();
   const app = Fastify({
     loggerInstance: logger,
     // Which reverse proxies' X-Forwarded-* to believe (secure cookies + rate-limit IPs); see config.ts.

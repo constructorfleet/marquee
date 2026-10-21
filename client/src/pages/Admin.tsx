@@ -125,7 +125,7 @@ function UsersPanel() {
         <label className="flex items-center gap-2 text-sm text-stone-300">
           <input
             type="checkbox"
-            checked={settings?.allowRegistration ?? true}
+            checked={settings?.allowRegistration ?? false}
             disabled={setRegistration.isPending || !settings}
             onChange={(e) => setRegistration.mutate(e.target.checked)}
             className="accent-neon-400"
@@ -133,7 +133,10 @@ function UsersPanel() {
           Allow anyone to create an account on the login page
         </label>
         <p className="text-sm text-stone-500">
-          When off, only accounts you create or import (or Plex/SSO sign-ins) can get in.
+          Off by default. When off, only accounts you create or import — plus Plex and SSO sign-ins, which your Plex
+          server and identity provider already vet — can get in. Jellyfin and Emby sign-ins follow this setting: with
+          it off, people who already have a Marquee account keep signing in, but nobody new gets one, so configuring
+          those servers for library sync doesn’t quietly let everyone on them in.
         </p>
       </section>
 
