@@ -11,4 +11,16 @@ services:
     # environment:
     #   - SESSION_SECRET=change-me-to-a-long-random-string
     #   - TZ=America/New_York
+
+    # Only /data and /tmp are writable; nothing else, including /app, is ever written.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    cap_drop: [ALL]
+    # Startup only: CHOWN reclaims a /data left root-owned by an earlier release,
+    # SETUID/SETGID drop to uid 1000. The app then runs with no capabilities.
+    # To grant none: chown -R 1000:1000 ./data, add user: "1000:1000", drop this line.
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped

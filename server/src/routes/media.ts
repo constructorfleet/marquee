@@ -55,6 +55,27 @@ export function serializeMedia(row: typeof media.$inferSelect) {
   };
 }
 
+// Caps what pre-auth artwork can reveal: a sample, re-drawn each window.
+const BACKDROP_POOL_SIZE = 12;
+const BACKDROP_POOL_TTL_MS = 6 * 60 * 60 * 1000;
+
+type BackdropItem = Pick<typeof media.$inferSelect, 'source' | 'thumb'>;
+let backdropPool: { items: BackdropItem[]; expiresAt: number } | null = null;
+
+function getBackdropPool(): BackdropItem[] {
+  if (backdropPool && backdropPool.expiresAt > Date.now()) return backdropPool.items;
+  const items = db
+    .select({ source: media.source, thumb: media.thumb })
+    .from(media)
+    .where(and(isNotNull(media.thumb), isNull(media.removedAt)))
+    .orderBy(sql`random()`)
+    .limit(BACKDROP_POOL_SIZE)
+    .all();
+  // Never cache empty: a first sync must not wait out the TTL.
+  if (items.length) backdropPool = { items, expiresAt: Date.now() + BACKDROP_POOL_TTL_MS };
+  return items;
+}
+
 // Poster proxy: streams artwork from the source server so tokens/keys stay server-side.
 export async function streamPoster(
   item: { source: 'plex' | 'jellyfin' | 'emby'; thumb: string | null },
@@ -182,13 +203,10 @@ export async function mediaRoutes(app: FastifyInstance) {
   // Unauthenticated: a random poster for the login-page backdrop. Streams
   // artwork only — no titles or metadata leave the server. Rate-limited because
   // it is pre-auth and drives a token-bearing request to the internal media server.
+  // Draws from a rotating sample, not the library: 2 req/s would otherwise enumerate it.
   app.get('/api/backdrop', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (_request, reply) => {
-    const rows = db
-      .select({ source: media.source, thumb: media.thumb })
-      .from(media)
-      .where(and(isNotNull(media.thumb), isNull(media.removedAt)))
-      .all();
-    if (!rows.length) return reply.code(404).send({ error: 'No artwork yet' });
-    return streamPoster(rows[crypto.randomInt(rows.length)]!, reply, 'no-store');
+    const pool = getBackdropPool();
+    if (!pool.length) return reply.code(404).send({ error: 'No artwork yet' });
+    return streamPoster(pool[crypto.randomInt(pool.length)]!, reply, 'no-store');
   });
 }
