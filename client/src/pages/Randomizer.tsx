@@ -1,6 +1,14 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ListSummary, MediaFilters, MediaItem, RandomFilters, ScheduledPickInfo } from '@marquee/shared';
+import type {
+  ListSummary,
+  MediaFilters,
+  MediaItem,
+  RandomFilters,
+  RandomPick,
+  ScheduledPickInfo,
+  SimilarToRecentInfo,
+} from '@marquee/shared';
 import { api, ApiError } from '../api';
 import { MediaFacts } from '../components/MediaDetails';
 import { Modal } from '../components/Modal';
@@ -14,6 +22,34 @@ function describeCadence(s: ScheduledPickInfo): string {
 }
 
 type TypeFilter = 'all' | 'movie' | 'show';
+
+const SEED_OPTIONS = [3, 5, 10];
+
+// Every status but 'applied' means the spin ignored the filter, so say so.
+function describeSimilar(info: SimilarToRecentInfo): string {
+  switch (info.status) {
+    case 'applied':
+      return `Picked from ${info.matchCount} title${info.matchCount === 1 ? '' : 's'} like your last ${info.seedCount} watched.`;
+    case 'no-history':
+      return 'No dated watch history for you yet, so this spin used the other filters only. Connect Trakt on your account page to seed from your history.';
+    case 'not-configured':
+      return 'No request service is set up, so this spin used the other filters only.';
+    case 'unsupported':
+      return 'Ombi can’t suggest similar titles, so this spin used the other filters only.';
+    case 'unavailable':
+      return 'The request service couldn’t be reached, so this spin used the other filters only.';
+    case 'no-matches':
+      return 'Nothing like your recent watches is in the library right now, so this spin used the other filters only.';
+  }
+}
+
+function SimilarNote({ info }: { info: SimilarToRecentInfo }) {
+  return (
+    <p className={`text-xs ${info.status === 'applied' ? 'text-neon-500' : 'text-stone-400'}`}>
+      {describeSimilar(info)}
+    </p>
+  );
+}
 
 // Source encodes what to draw from: the whole library, one Plex library
 // section, one Plex collection, or one of the user's lists.
@@ -40,6 +76,9 @@ export function Randomizer() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [genre, setGenre] = useState('');
   const [unwatchedOnly, setUnwatchedOnly] = useState(false);
+  const [similarToRecent, setSimilarToRecent] = useState(false);
+  const [recentSeedCount, setRecentSeedCount] = useState(5);
+  const [similarInfo, setSimilarInfo] = useState<SimilarToRecentInfo | null>(null);
   const [yearFrom, setYearFrom] = useState('');
   const [yearTo, setYearTo] = useState('');
   const [minRating, setMinRating] = useState('');
@@ -74,6 +113,10 @@ export function Randomizer() {
     if (typeFilter !== 'all') filters.type = typeFilter;
     if (genre) filters.genre = genre;
     if (unwatchedOnly) filters.unwatchedOnly = true;
+    if (similarToRecent) {
+      filters.similarToRecent = true;
+      filters.recentSeedCount = recentSeedCount;
+    }
     if (yearFrom) filters.yearFrom = Number(yearFrom);
     if (yearTo) filters.yearTo = Number(yearTo);
     if (minRating) filters.minRating = Number(minRating);
@@ -84,10 +127,11 @@ export function Randomizer() {
 
   const spin = useMutation({
     mutationFn: () => {
-      if (source.kind === 'list') return api<MediaItem>(`/api/lists/${source.id}/random`, { body: {} });
-      return api<MediaItem>('/api/media/random', { body: buildFilters() });
+      if (source.kind === 'list') return api<RandomPick>(`/api/lists/${source.id}/random`, { body: {} });
+      return api<RandomPick>('/api/media/random', { body: buildFilters() });
     },
     onSuccess: (item) => {
+      setSimilarInfo(item.similarToRecent ?? null);
       // A short delay makes the reveal feel like a drum roll instead of a database query.
       setSpinning(true);
       setTimeout(() => {
@@ -95,7 +139,10 @@ export function Randomizer() {
         setSpinning(false);
       }, 600);
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Something went wrong'),
+    onError: (err) => {
+      setSimilarInfo(null);
+      setError(err instanceof ApiError ? err.message : 'Something went wrong');
+    },
   });
 
   const { data: schedules } = useQuery({
@@ -138,6 +185,7 @@ export function Randomizer() {
     mutationFn: (id: number) => api<MediaItem>(`/api/schedules/${id}/run`, { body: {} }),
     onSuccess: (item) => {
       setPick(item);
+      setSimilarInfo(null); // a schedule's saved filters aren't the ones on screen
       setError(null);
       refreshSchedules();
     },
@@ -242,6 +290,39 @@ export function Randomizer() {
               <option value="7">★ 7+</option>
               <option value="8">★ 8+</option>
             </select>
+            <div className="col-span-2 space-y-2 border-t border-neon-500/10 pt-3">
+              <label className="flex items-center gap-2 text-sm text-stone-300">
+                <input
+                  type="checkbox"
+                  checked={similarToRecent}
+                  onChange={(e) => setSimilarToRecent(e.target.checked)}
+                  className="accent-neon-400"
+                />
+                Like what I’ve been watching
+              </label>
+              {similarToRecent && (
+                <div className="flex items-center gap-2 pl-6">
+                  <span className="text-xs text-stone-400">Seed from my last</span>
+                  <select
+                    className="input w-auto py-1 text-xs"
+                    value={recentSeedCount}
+                    onChange={(e) => setRecentSeedCount(Number(e.target.value))}
+                  >
+                    {SEED_OPTIONS.map((n) => (
+                      <option key={n} value={n}>
+                        {n} titles
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {similarToRecent && (
+                <p className="pl-6 text-xs text-stone-500">
+                  Narrows to library titles your request service suggests from your own recent watches. If it can’t,
+                  the spin still happens and says so.
+                </p>
+              )}
+            </div>
           </div>
         )}
         {isList && <p className="text-xs text-stone-500">Filters don’t apply to lists.</p>}
@@ -257,6 +338,7 @@ export function Randomizer() {
           {spinning || spin.isPending ? 'Drawing…' : pick ? 'Spin again' : 'Spin'}
         </button>
         {error && <p className="text-sm text-crimson-500">{error}</p>}
+        {similarInfo && !spinning && <SimilarNote info={similarInfo} />}
       </div>
 
       {pick && !spinning && (
@@ -268,6 +350,11 @@ export function Randomizer() {
             <p className="marquee-title text-2xl">{pick.title}</p>
             <MediaFacts item={pick} />
             {pick.librarySection && <p className="text-left text-xs text-stone-500">From {pick.librarySection}</p>}
+            {similarInfo && (
+              <div className="text-left">
+                <SimilarNote info={similarInfo} />
+              </div>
+            )}
           </div>
           <div className="mt-5 flex gap-2">
             <button

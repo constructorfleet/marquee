@@ -268,6 +268,9 @@ export const userWatched = sqliteTable(
     mediaId: integer('media_id')
       .notNull()
       .references(() => media.id, { onDelete: 'cascade' }),
+    // Trakt's last_watched_at, for "what have I watched lately" draws. Null when
+    // Trakt omitted it, and for rows written before this column existed.
+    watchedAt: integer('watched_at', { mode: 'timestamp' }),
   },
   (t) => [uniqueIndex('user_watched_unique').on(t.userId, t.mediaId)],
 );
