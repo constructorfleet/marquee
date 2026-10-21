@@ -111,10 +111,14 @@ export async function fetchJfData(kind: JfKind): Promise<SourceSyncData> {
   const cfg = getJfConfig(kind);
   if (!cfg) throw new Error(`${kind} is not configured`);
 
-  // Server id enables web-app deep links.
+  // Server id enables web-app deep links, and tells the writer if this is a different server.
+  let serverId: string | null = null;
   try {
     const info = await jfGet<{ Id?: string }>(cfg, '/System/Info');
-    if (info?.Id) setSetting(`${kind}.serverId`, info.Id);
+    if (info?.Id) {
+      serverId = info.Id;
+      setSetting(`${kind}.serverId`, info.Id);
+    }
   } catch {
     // deep links just won't work; not fatal
   }
@@ -143,29 +147,31 @@ export async function fetchJfData(kind: JfKind): Promise<SourceSyncData> {
 
   // Box sets are the Jellyfin/Emby equivalent of Plex collections.
   const collections: NormalizedCollection[] = [];
+  let collectionsComplete = true;
   try {
     const boxSets = await jfGet<JfItemsResponse>(
       cfg,
       `/Users/${userId}/Items?IncludeItemTypes=BoxSet&Recursive=true`,
     );
+    // A failed member fetch is null, not empty, so the writer keeps that box set's members.
     const children = await mapLimit(boxSets.Items ?? [], COLLECTION_CONCURRENCY, (b) =>
-      jfGet<JfItemsResponse>(cfg, `/Users/${userId}/Items?ParentId=${encodeURIComponent(b.Id)}`).catch(
-        () => ({ Items: [] as JfItem[] }),
-      ),
+      jfGet<JfItemsResponse>(cfg, `/Users/${userId}/Items?ParentId=${encodeURIComponent(b.Id)}`).catch(() => null),
     );
     (boxSets.Items ?? []).forEach((b, i) => {
+      const members = children[i];
       collections.push({
         ratingKey: b.Id,
         title: b.Name,
         librarySection: null,
-        childRatingKeys: (children[i]!.Items ?? []).map((c) => c.Id),
+        childRatingKeys: members ? (members.Items ?? []).map((c) => c.Id) : null,
       });
     });
   } catch {
-    // box sets unavailable — sync items only
+    // box sets unavailable this time — sync items only, and prune no box sets
+    collectionsComplete = false;
   }
 
-  return { source: kind, sections: wanted.length, items, collections };
+  return { source: kind, serverId, sections: wanted.length, items, collections, collectionsComplete };
 }
 
 export interface JfSessionInfo {

@@ -106,8 +106,17 @@ function UsersPanel() {
       u.emby && 'Emby',
       u.discord && 'Discord',
       u.oidc && 'SSO',
-      u.guest && 'public poll guest',
     ].filter(Boolean) as string[];
+
+  // Public-poll guests can't sign in, so they get their own group below the members.
+  const members = userList?.filter((u) => !u.guest);
+  const guestLabel = (u: AdminUserInfo) => u.guestName ?? u.username;
+  const guests = (userList?.filter((u) => u.guest) ?? []).sort((a, b) =>
+    guestLabel(a).localeCompare(guestLabel(b), undefined, { sensitivity: 'base' }),
+  );
+  const deleteUser = (u: AdminUserInfo, name: string) => {
+    if (window.confirm(`Delete ${name}? Their votes and lists go with them.`)) removeUser.mutate(u.id);
+  };
 
   return (
     <>
@@ -131,7 +140,7 @@ function UsersPanel() {
       <section className="card space-y-4 p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-xs font-semibold tracking-widest text-neon-500 uppercase">
-            Users {userList ? `(${userList.length})` : ''}
+            Users {members ? `(${members.length})` : ''}
           </h2>
           <button className="btn btn-ghost" disabled={importPlex.isPending} onClick={() => importPlex.mutate()}>
             {importPlex.isPending ? 'Importing…' : 'Import Plex users'}
@@ -143,7 +152,7 @@ function UsersPanel() {
         </p>
         {message && <p className="text-sm text-stone-300">{message}</p>}
         <ul className="space-y-2">
-          {userList?.map((u) => (
+          {members?.map((u) => (
             <li key={u.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-500/10 px-3 py-2">
               <div className="min-w-0">
                 <p className="text-sm text-stone-100">
@@ -172,14 +181,7 @@ function UsersPanel() {
                   >
                     {u.isAdmin ? 'Remove admin' : 'Make admin'}
                   </button>
-                  <button
-                    className="btn btn-ghost px-3 py-1 text-xs"
-                    onClick={() => {
-                      if (window.confirm(`Delete ${u.username}? Their votes and lists go with them.`)) {
-                        removeUser.mutate(u.id);
-                      }
-                    }}
-                  >
+                  <button className="btn btn-ghost px-3 py-1 text-xs" onClick={() => deleteUser(u, u.username)}>
                     Delete
                   </button>
                 </div>
@@ -187,6 +189,30 @@ function UsersPanel() {
             </li>
           ))}
         </ul>
+        {guests.length > 0 && (
+          <details className="rounded-lg border border-neon-500/10 px-3 py-2">
+            <summary className="cursor-pointer text-sm text-stone-300">Public-poll guests ({guests.length})</summary>
+            <p className="mt-2 text-xs text-stone-500">
+              People who voted through a public poll link without an account. They can’t sign in, and they’re removed
+              automatically once the polls they voted in are deleted.
+            </p>
+            <ul className="mt-2 space-y-2">
+              {guests.map((u) => (
+                <li key={u.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-500/10 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-sm text-stone-100">{guestLabel(u)}</p>
+                    <p className="text-xs text-stone-500">
+                      {u.username} · first voted {new Date(u.createdAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <button className="btn btn-ghost px-3 py-1 text-xs" onClick={() => deleteUser(u, guestLabel(u))}>
+                    Delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </section>
 
       <section className="card space-y-4 p-5">
@@ -683,7 +709,9 @@ export function Admin() {
   const sync = useMutation({
     mutationFn: () => api<SyncResult>('/api/admin/sync', { body: {} }),
     onSuccess: (r) => {
-      const parts = r.results.map((s) => `${s.source}: ${s.items} titles, ${s.collections} collections`);
+      const parts = r.results.map(
+        (s) => `${s.source}: ${s.items} titles, ${s.collections} collections${s.removed ? `, ${s.removed} no longer on the server` : ''}`,
+      );
       const errors = r.errors.length ? ` — errors: ${r.errors.join('; ')}` : '';
       setMessage(`✓ Synced ${parts.join(' · ')}${errors}`);
       queryClient.invalidateQueries({ queryKey: ['admin', 'stats'] });
@@ -979,7 +1007,10 @@ export function Admin() {
       <section className="card space-y-4 p-5">
         <h2 className="text-xs font-semibold tracking-widest text-neon-500 uppercase">Requests — Overseerr / Jellyseerr / Ombi</h2>
         <p className="text-sm text-stone-400">
-          Lets users request missing titles (e.g. from incomplete film series) straight from Marquee.
+          Lets users request missing titles (e.g. from incomplete film series) straight from Marquee. With Overseerr or
+          Jellyseerr, each request is made as that person’s own account there (matched by their Plex, Jellyfin or Emby
+          sign-in), so the permissions, auto-approval and quotas you set in it apply; people without an account there
+          can’t request. Ombi requests are limited to Marquee admins.
         </p>
         <div className="flex flex-wrap gap-3">
           <select className="input w-auto" value={seerrKind} onChange={(e) => setSeerrKind(e.target.value as 'overseerr' | 'ombi')}>

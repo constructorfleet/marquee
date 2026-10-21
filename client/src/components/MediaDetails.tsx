@@ -66,7 +66,12 @@ export function MediaDetailsModal({ mediaId, onClose }: { mediaId: number | null
             <div className="w-28 shrink-0">
               <Poster mediaId={item.id} title={item.title} className="rounded-lg" />
             </div>
-            <h2 className="font-display text-xl text-neon-300">{item.title}</h2>
+            <div>
+              <h2 className="font-display text-xl text-neon-300">{item.title}</h2>
+              {item.removed && (
+                <p className="mt-1 text-sm text-stone-500">No longer in your library — it was removed from the media server.</p>
+              )}
+            </div>
           </div>
           <MediaFacts item={item} />
         </div>

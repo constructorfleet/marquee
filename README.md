@@ -11,7 +11,7 @@
 
 ### Polls
 
-Pick titles from your library (search, filter by library or genre, or add a whole collection at once), share via link, and vote by tapping a poster — **one vote per person, enforced by the database**. Results update live for everyone watching. Polls can auto-open and auto-close on a schedule, with the winner computed automatically (ties go to the title that reached the top count first). Rename a poll, change its description, or add and remove titles any time before voting closes. Admins can pin important polls to the top, or share one at a public link so people without an account can vote — they give their name, and each browser gets one vote.
+Pick titles from your library (search, filter by library or genre, or add a whole collection at once), share via link, and vote by tapping a poster — **one vote per person, enforced by the database**. Results update live for everyone watching. Polls can auto-open and auto-close on a schedule, with the winner computed automatically (ties go to the title that reached the top count first). Rename a poll, change its description, or add and remove titles any time before voting closes. Admins can pin important polls to the top, or share one at a public link so people without an account can vote — they give their name, each browser gets one vote, and each network at most 10 guest votes per poll (plenty for a household, not for ballot stuffing).
 
 ![Polls](docs/screenshots/polls.png)
 
@@ -57,7 +57,7 @@ Post a poll to a channel and people vote with buttons — **no Marquee account n
 
 ### Everything else
 
-- **Media servers**: Plex, Jellyfin, and Emby — any combination at once, with cross-server de-duplication and automatic library sync (every few hours or daily at a set time)
+- **Media servers**: Plex, Jellyfin, and Emby — any combination at once, with cross-server de-duplication and automatic library sync (every few hours or daily at a set time). Titles removed from a server disappear from search and the randomizer but stay in past polls and lists, and come back if re-added
 - **Sign-in options**: local accounts, Sign in with Plex (popup PIN flow), Jellyfin/Emby credentials, OIDC (Authentik/Authelia/Keycloak/…), and passkeys (WebAuthn)
 - **User management**: create accounts, import your Plex Home members and friends in one click (safe to re-run as new people join), set/reset passwords, promote admins, disable open registration. Usernames are case-insensitive — "Michael" and "michael" are the same account
 - **Trakt**: users connect their own accounts for personal watch status everywhere
@@ -111,7 +111,7 @@ Everything else — media servers, Trakt, TMDb, Discord, request services, OIDC,
 | **Trakt** | Free [API app](https://trakt.tv/oauth/applications) (redirect URI `urn:ietf:wg:oauth:2.0:oob`) | Per-user watch history |
 | **TMDb** | Free [API key](https://www.themoviedb.org/settings/api) | Film-series scan + missing-title detection |
 | **Discord** | Bot token + channel ID | Poll voting from Discord, winner announcements |
-| **Overseerr / Jellyseerr / Ombi** | Service URL + API key | One-click requests for missing titles |
+| **Overseerr / Jellyseerr / Ombi** | Service URL + API key | One-click requests for missing titles. With Overseerr/Jellyseerr each request is made as the person's own account there (matched by Plex, Jellyfin or Emby sign-in), so its permissions and quotas apply; Ombi requests are admin-only |
 | **OIDC** | Issuer URL + client ID/secret | Single sign-on |
 
 ## Widget API

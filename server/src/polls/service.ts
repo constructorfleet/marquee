@@ -1,10 +1,26 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { media, pollOptions, polls, users, votes } from '../db/schema.js';
 import { notifyPollClosed } from '../discord/bot.js';
 import { emitPollUpdate } from '../events.js';
 
 export const MAX_POLL_OPTIONS = 50;
+
+// The titles for these ids that can go in a poll — still on the media server —
+// in the order given, each once (a title listed twice would split its votes).
+export function pollableMedia(ids: number[]): (typeof media.$inferSelect)[] {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return [];
+  const found = new Map(
+    db
+      .select()
+      .from(media)
+      .where(and(inArray(media.id, unique), isNull(media.removedAt)))
+      .all()
+      .map((m) => [m.id, m]),
+  );
+  return unique.map((id) => found.get(id)).filter((m): m is typeof media.$inferSelect => !!m);
+}
 
 // An option snapshots the title (with year) and poster at the time it's added.
 export function optionFromMedia(pollId: number, m: typeof media.$inferSelect): typeof pollOptions.$inferInsert {
@@ -77,7 +93,13 @@ function votersByOption(pollId: number): Map<number, string[]> {
 
 export function serializePollDetail(poll: typeof polls.$inferSelect, viewer: { id: number; isAdmin: boolean }) {
   const userId = viewer.id;
-  const options = db.select().from(pollOptions).where(eq(pollOptions.pollId, poll.id)).all();
+  // Options keep their own title, so ones whose title has left the server still show — flagged.
+  const options = db
+    .select({ id: pollOptions.id, title: pollOptions.title, mediaId: pollOptions.mediaId, removedAt: media.removedAt })
+    .from(pollOptions)
+    .leftJoin(media, eq(pollOptions.mediaId, media.id))
+    .where(eq(pollOptions.pollId, poll.id))
+    .all();
   const counts = getOptionCounts(poll.id);
   const myVote = db
     .select({ optionId: votes.optionId })
@@ -107,6 +129,7 @@ export function serializePollDetail(poll: typeof polls.$inferSelect, viewer: { i
       title: o.title,
       mediaId: o.mediaId,
       votes: counts.get(o.id) ?? 0,
+      removed: o.removedAt !== null,
       ...(voters ? { voters: voters.get(o.id) ?? [] } : {}),
     })),
   };

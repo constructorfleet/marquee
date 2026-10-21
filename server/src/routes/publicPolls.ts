@@ -8,14 +8,15 @@ import { requireAdmin } from '../auth/plugin.js';
 import { updatePollMessage } from '../discord/bot.js';
 import { emitPollUpdate, streamPollEvents } from '../events.js';
 import { serializePollDetail, serializePublicPoll } from '../polls/service.js';
-import { uniqueUsername } from '../auth/usernames.js';
+import { GUEST_VOTES_PER_NETWORK, guestUsername, networkFingerprint } from '../polls/guests.js';
 import { streamPoster } from './media.js';
 
 // Public poll links: an admin can share a poll at /vote/<publicToken> so people
 // without a Marquee account can vote. Each browser gets a guest account (like
 // the Discord bot's shadow accounts), so the votes table's one-vote-per-account
 // rule still applies. Guests also give a name, and a name can only vote once
-// per poll. Signed-in visitors vote as themselves.
+// per poll; each network is capped too (see polls/guests.ts). Signed-in
+// visitors vote as themselves.
 
 const VOTER_COOKIE = 'marquee_voter';
 const VOTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365; // a year, in seconds
@@ -57,7 +58,8 @@ function currentVoterId(request: FastifyRequest): number | null {
 }
 
 // This browser's guest account, created (and the cookie set) on its first vote.
-function guestAccountId(request: FastifyRequest, reply: FastifyReply, name: string): number {
+// Its username is internal; the name the guest typed is kept on their vote.
+function guestAccountId(request: FastifyRequest, reply: FastifyReply): number {
   const guestId = readGuestId(request) ?? crypto.randomBytes(16).toString('hex');
   const existing = db.select({ id: users.id }).from(users).where(eq(users.guestId, guestId)).get();
   if (existing) return existing.id;
@@ -71,7 +73,7 @@ function guestAccountId(request: FastifyRequest, reply: FastifyReply, name: stri
   });
   return db
     .insert(users)
-    .values({ username: uniqueUsername(name), passwordHash: null, guestId })
+    .values({ username: guestUsername(guestId), passwordHash: null, guestId })
     .returning({ id: users.id })
     .get().id;
 }
@@ -122,6 +124,7 @@ export async function publicPollRoutes(app: FastifyInstance) {
 
     let userId: number;
     let voterName: string | null = null;
+    let voterNetwork: string | null = null;
     if (request.user) {
       userId = request.user.id;
     } else {
@@ -133,13 +136,22 @@ export async function publicPollRoutes(app: FastifyInstance) {
         .where(and(eq(votes.pollId, poll.id), sql`lower(${votes.voterName}) = lower(${voterName})`))
         .get();
       if (nameTaken) {
-        return reply.code(409).send({ error: `Someone named ${voterName} has already voted in this poll` });
+        return reply.code(409).send({ error: 'That name is already taken in this poll — add an initial or a nickname' });
       }
-      userId = guestAccountId(request, reply, voterName);
+      voterNetwork = networkFingerprint(request.ip);
+      const fromNetwork = db
+        .select({ n: sql<number>`count(*)` })
+        .from(votes)
+        .where(and(eq(votes.pollId, poll.id), eq(votes.voterNetwork, voterNetwork)))
+        .get()!.n;
+      if (fromNetwork >= GUEST_VOTES_PER_NETWORK) {
+        return reply.code(429).send({ error: 'Lots of guests have already voted from your network on this poll — sign in to vote' });
+      }
+      userId = guestAccountId(request, reply);
     }
 
     try {
-      db.insert(votes).values({ pollId: poll.id, optionId: option.id, userId, voterName }).run();
+      db.insert(votes).values({ pollId: poll.id, optionId: option.id, userId, voterName, voterNetwork }).run();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('UNIQUE')) return reply.code(409).send({ error: 'You have already voted in this poll' });

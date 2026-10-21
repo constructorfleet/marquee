@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { and, asc, eq, isNotNull, like, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, like, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import { collectionItems, collections, media } from '../db/schema.js';
@@ -10,6 +10,8 @@ import { fetchArtwork } from '../plex/client.js';
 import { pickRandomMedia } from '../randomizer/service.js';
 import { getPlexConfig, getSetting } from '../settings.js';
 import { dedupeMedia } from '../sources/dedupe.js';
+
+const RESULTS_PER_PAGE = 60;
 
 export const randomFiltersSchema = z.object({
   type: z.enum(['movie', 'show']).optional(),
@@ -41,12 +43,15 @@ function buildWatchUrl(row: typeof media.$inferSelect): string | null {
 // Tag lists are stored as JSON strings; parse before sending to clients.
 export function serializeMedia(row: typeof media.$inferSelect) {
   const parse = (value: string | null) => (value ? (JSON.parse(value) as string[]) : null);
+  const { removedAt, ...fields } = row;
+  delete (fields as { copyIds?: number[] }).copyIds; // dedupeMedia bookkeeping, not for clients
   return {
-    ...row,
+    ...fields,
     genres: parse(row.genres),
     directors: parse(row.directors),
     actors: parse(row.actors),
     watchUrl: buildWatchUrl(row),
+    removed: removedAt !== null, // no longer on its media server; kept for old polls and lists
   };
 }
 
@@ -92,26 +97,30 @@ export async function mediaRoutes(app: FastifyInstance) {
       section?: string;
       genre?: string;
     };
-    const conditions: SQL[] = [];
+    const conditions: SQL[] = [isNull(media.removedAt)];
     if (q) conditions.push(like(media.title, `%${q}%`));
     if (type === 'movie' || type === 'show') conditions.push(eq(media.type, type));
     if (section) conditions.push(eq(media.librarySection, section));
     if (genre) conditions.push(like(media.genres, `%"${genre}"%`));
+    // Fetch extra: with several servers, copies of one title collapse into one,
+    // and limiting first would leave far fewer than a page of results.
     const rows = db
       .select()
       .from(media)
-      .where(conditions.length ? and(...conditions) : undefined)
+      .where(and(...conditions))
       .orderBy(sort === 'random' ? sql`random()` : asc(media.title))
-      .limit(60)
+      .limit(RESULTS_PER_PAGE * 3)
       .all();
-    return dedupeMedia(rows).map(serializeMedia);
+    return dedupeMedia(rows).slice(0, RESULTS_PER_PAGE).map(serializeMedia);
   });
 
   // Filter options for the randomizer: library sections, genres, and Plex collections.
   app.get('/api/media/filters', { preHandler: requireUser }, async () => {
+    const onServer = isNull(media.removedAt);
     const sections = db
       .selectDistinct({ s: media.librarySection })
       .from(media)
+      .where(onServer)
       .all()
       .map((r) => r.s)
       .filter((s): s is string => !!s)
@@ -121,25 +130,27 @@ export async function mediaRoutes(app: FastifyInstance) {
         db
           .select({ g: media.genres })
           .from(media)
+          .where(onServer)
           .all()
           .flatMap((r) => (r.g ? (JSON.parse(r.g) as string[]) : [])),
       ),
     ].sort();
+    const itemCounts = new Map(
+      db
+        .select({ id: collectionItems.collectionId, n: sql<number>`count(*)` })
+        .from(collectionItems)
+        .innerJoin(media, eq(collectionItems.mediaId, media.id))
+        .where(onServer)
+        .groupBy(collectionItems.collectionId)
+        .all()
+        .map((r) => [r.id, r.n]),
+    );
     const cols = db
       .select()
       .from(collections)
       .orderBy(asc(collections.title))
       .all()
-      .map((c) => ({
-        id: c.id,
-        title: c.title,
-        librarySection: c.librarySection,
-        itemCount: db
-          .select({ c: sql<number>`count(*)` })
-          .from(collectionItems)
-          .where(eq(collectionItems.collectionId, c.id))
-          .get()!.c,
-      }));
+      .map((c) => ({ id: c.id, title: c.title, librarySection: c.librarySection, itemCount: itemCounts.get(c.id) ?? 0 }));
     return { sections, genres, collections: cols };
   });
 
@@ -175,7 +186,7 @@ export async function mediaRoutes(app: FastifyInstance) {
     const rows = db
       .select({ source: media.source, thumb: media.thumb })
       .from(media)
-      .where(isNotNull(media.thumb))
+      .where(and(isNotNull(media.thumb), isNull(media.removedAt)))
       .all();
     if (!rows.length) return reply.code(404).send({ error: 'No artwork yet' });
     return streamPoster(rows[crypto.randomInt(rows.length)]!, reply, 'no-store');

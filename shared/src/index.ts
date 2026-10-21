@@ -69,6 +69,7 @@ export interface MediaItem {
   actors: string[] | null;
   watched: boolean;
   watchUrl: string | null;
+  removed: boolean; // no longer on its media server; kept so old polls and lists still show it
 }
 
 export interface CollectionSummary {
@@ -92,6 +93,7 @@ export interface PollOptionResult {
   mediaId: number | null;
   votes: number;
   voters?: string[]; // who voted for it, only sent to the poll's owner and admins
+  removed?: boolean; // its title is no longer on the media server (poll detail only)
 }
 
 export interface PollSummary {
@@ -121,6 +123,7 @@ export interface AdminUserInfo {
   discord: boolean;
   oidc: boolean;
   guest: boolean; // created by a vote on a public poll link
+  guestName: string | null; // for guests: the name they last voted under (their username is internal)
   createdAt: string;
 }
 
@@ -181,7 +184,8 @@ export interface IssueReport {
 }
 
 export interface AdminStats {
-  users: number;
+  users: number; // members (public-poll guests aren't counted)
+  guests: number;
   polls: number;
   openPolls: number;
   votes: number;
@@ -409,6 +413,6 @@ export interface NowPlayingResponse {
 }
 
 export interface SyncResult {
-  results: { source: SourceKind; sections: number; items: number; collections: number }[];
+  results: { source: SourceKind; sections: number; items: number; collections: number; removed: number }[];
   errors: string[];
 }

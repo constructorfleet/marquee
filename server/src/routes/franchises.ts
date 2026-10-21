@@ -1,22 +1,24 @@
 import type { FastifyInstance } from 'fastify';
-import { asc, eq, isNotNull } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { media, tmdbCollectionParts, tmdbCollections } from '../db/schema.js';
 import { requireUser } from '../auth/plugin.js';
-import { getSeerrConfig } from '../seerr/client.js';
+import { canRequest } from '../seerr/client.js';
+import { requesterFor } from './requests.js';
 
-// TMDb ids of everything in the library, for owned/missing computation.
+// TMDb ids of the movies in the library, for owned/missing computation. Movies
+// only: TV shows have TMDb ids too, from a separate numbering that overlaps.
 function libraryTmdbIds(): Map<string, number> {
   const rows = db
     .select({ id: media.id, tmdbId: media.tmdbId })
     .from(media)
-    .where(isNotNull(media.tmdbId))
+    .where(and(eq(media.type, 'movie'), isNotNull(media.tmdbId), isNull(media.removedAt)))
     .all();
   return new Map(rows.map((r) => [r.tmdbId!, r.id]));
 }
 
 export async function franchiseRoutes(app: FastifyInstance) {
-  app.get('/api/franchises', { preHandler: requireUser }, async () => {
+  app.get('/api/franchises', { preHandler: requireUser }, async (request) => {
     const lib = libraryTmdbIds();
     const cols = db.select().from(tmdbCollections).orderBy(asc(tmdbCollections.name)).all();
     const franchises = cols
@@ -30,7 +32,7 @@ export async function franchiseRoutes(app: FastifyInstance) {
         return { id: c.id, name: c.name, total: parts.length, owned, missing: parts.length - owned };
       })
       .filter((f) => f.total > 0 && f.owned > 0);
-    return { requestsEnabled: !!getSeerrConfig(), franchises };
+    return { requestsEnabled: await canRequest(requesterFor(request.user!)), franchises };
   });
 
   app.get('/api/franchises/:id', { preHandler: requireUser }, async (request, reply) => {
@@ -52,6 +54,6 @@ export async function franchiseRoutes(app: FastifyInstance) {
         inLibrary: lib.has(p.tmdbMovieId),
         mediaId: lib.get(p.tmdbMovieId) ?? null,
       }));
-    return { id: col.id, name: col.name, requestsEnabled: !!getSeerrConfig(), parts };
+    return { id: col.id, name: col.name, requestsEnabled: await canRequest(requesterFor(request.user!)), parts };
   });
 }

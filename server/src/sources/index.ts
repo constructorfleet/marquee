@@ -18,6 +18,7 @@ export interface SourceSyncResult {
   sections: number;
   items: number;
   collections: number;
+  removed: number; // titles marked as no longer on the server
 }
 
 // Sync every configured media server. One source failing doesn't stop the others.

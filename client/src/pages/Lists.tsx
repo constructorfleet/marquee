@@ -119,6 +119,7 @@ export function Lists() {
               >
                 <Poster mediaId={m.id} title={m.title} className={`rounded-lg ${detail.isOwner ? 'group-hover:opacity-60' : ''}`} />
                 <p className="mt-1 truncate text-xs text-stone-300">{m.title}</p>
+                {m.removed && <p className="text-[11px] text-stone-500">No longer in your library</p>}
               </button>
             ))}
             {detail.items.length === 0 && <p className="col-span-full text-sm text-stone-400">This list is empty.</p>}

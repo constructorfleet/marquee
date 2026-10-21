@@ -3,15 +3,17 @@ import type { FastifyInstance } from 'fastify';
 import { and, desc, eq, ne, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
-import { media, pollOptions, polls, votes } from '../db/schema.js';
+import { pollOptions, polls, votes } from '../db/schema.js';
 import { requireUser } from '../auth/plugin.js';
 import { DISCORD_MAX_OPTIONS, postPollToDiscord, updatePollMessage } from '../discord/bot.js';
 import { emitPollUpdate, streamPollEvents } from '../events.js';
+import { pruneGuestsWithoutVotes } from '../polls/guests.js';
 import {
   closePoll,
   getOptionCounts,
   MAX_POLL_OPTIONS,
   optionFromMedia,
+  pollableMedia,
   serializePollDetail,
 } from '../polls/service.js';
 
@@ -84,9 +86,7 @@ export async function pollRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
     const { title, description, mediaIds, opensAt, closesAt, openNow } = parsed.data;
 
-    const items = mediaIds
-      .map((id) => db.select().from(media).where(eq(media.id, id)).get())
-      .filter((m): m is typeof media.$inferSelect => !!m);
+    const items = pollableMedia(mediaIds);
     if (items.length < 2) return reply.code(400).send({ error: 'A poll needs at least two valid options' });
 
     const poll = db
@@ -122,10 +122,7 @@ export async function pollRoutes(app: FastifyInstance) {
 
     const existing = db.select().from(pollOptions).where(eq(pollOptions.pollId, poll.id)).all();
     const present = new Set(existing.map((o) => o.mediaId));
-    const items = [...new Set(parsed.data.mediaIds)]
-      .filter((id) => !present.has(id))
-      .map((id) => db.select().from(media).where(eq(media.id, id)).get())
-      .filter((m): m is typeof media.$inferSelect => !!m);
+    const items = pollableMedia(parsed.data.mediaIds.filter((id) => !present.has(id)));
     if (!items.length) return reply.code(400).send({ error: 'Nothing to add — those titles are already in this poll' });
 
     // A poll already posted to Discord has to keep fitting in its button grid.
@@ -158,6 +155,7 @@ export async function pollRoutes(app: FastifyInstance) {
     if (options.length <= 2) return reply.code(400).send({ error: 'A poll needs at least two options' });
 
     db.delete(pollOptions).where(eq(pollOptions.id, option.id)).run();
+    pruneGuestsWithoutVotes(); // its votes went with it
     emitPollUpdate(token);
     void updatePollMessage(poll.id);
     return serializePollDetail(poll, request.user!);
@@ -297,6 +295,7 @@ export async function pollRoutes(app: FastifyInstance) {
     if (!poll) return reply.code(404).send({ error: 'Poll not found' });
     if (!canManage(poll, request.user!)) return reply.code(403).send({ error: 'Only the poll owner can do that' });
     db.delete(polls).where(eq(polls.id, poll.id)).run();
+    pruneGuestsWithoutVotes(); // the poll's votes went with it
     return reply.code(204).send();
   });
 

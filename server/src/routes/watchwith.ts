@@ -1,18 +1,21 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { eq, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import { media, users } from '../db/schema.js';
 import { requireUser } from '../auth/plugin.js';
 import { decryptSecret } from '../crypto.js';
-import { getSeerrConfig } from '../seerr/client.js';
+import { isMemberAccount } from '../polls/guests.js';
+import { canRequest } from '../seerr/client.js';
+import { requesterFor } from './requests.js';
 import { dedupeMedia } from '../sources/dedupe.js';
 import { fetchWatchlist, watchedSetForUser, watchlistKey } from '../watchwith/service.js';
 import { serializeMedia } from './media.js';
 
 export async function watchWithRoutes(app: FastifyInstance) {
-  // Everyone else on the instance, with what history sources they bring.
+  // Everyone else on the instance who signs in (not public-poll guests or
+  // Discord voters), with what history sources they bring.
   app.get('/api/watchwith/partners', { preHandler: requireUser }, async (request) => {
     // Reduce token presence to booleans in SQL so other users' encrypted
     // tokens never enter application memory here.
@@ -24,7 +27,7 @@ export async function watchWithRoutes(app: FastifyInstance) {
         hasTrakt: sql<number>`(${users.traktToken} is not null)`,
       })
       .from(users)
-      .where(ne(users.id, request.user!.id))
+      .where(and(ne(users.id, request.user!.id), isMemberAccount))
       .all()
       .map((u) => ({ id: u.id, username: u.username, hasPlex: !!u.hasPlex, hasTrakt: !!u.hasTrakt }));
   });
@@ -38,7 +41,11 @@ export async function watchWithRoutes(app: FastifyInstance) {
     if (parsed.data.partnerId === request.user!.id) {
       return reply.code(400).send({ error: 'Pick someone other than yourself — that’s just the randomizer' });
     }
-    const partner = db.select({ id: users.id }).from(users).where(eq(users.id, parsed.data.partnerId)).get();
+    const partner = db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.id, parsed.data.partnerId), isMemberAccount))
+      .get();
     if (!partner) return reply.code(404).send({ error: 'Partner not found' });
 
     const [mine, theirs] = await Promise.all([
@@ -50,10 +57,12 @@ export async function watchWithRoutes(app: FastifyInstance) {
       db
         .select()
         .from(media)
-        .where(parsed.data.type ? eq(media.type, parsed.data.type) : undefined)
+        .where(and(isNull(media.removedAt), parsed.data.type ? eq(media.type, parsed.data.type) : undefined))
         .all(),
     );
-    const pool = rows.filter((r) => !mine.set.has(r.id) && !theirs.set.has(r.id));
+    // Seen by either person on any copy of the title (Plex, Jellyfin, Emby) rules it out.
+    const seen = (id: number) => mine.set.has(id) || theirs.set.has(id);
+    const pool = rows.filter((r) => !r.copyIds.some(seen));
     if (!pool.length) {
       return reply.code(404).send({ error: 'No titles left that neither of you has seen — impressive. Try widening the filter.' });
     }
@@ -72,7 +81,7 @@ export async function watchWithRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
 
     const me = db.select().from(users).where(eq(users.id, request.user!.id)).get();
-    const partner = db.select().from(users).where(eq(users.id, parsed.data.partnerId)).get();
+    const partner = db.select().from(users).where(and(eq(users.id, parsed.data.partnerId), isMemberAccount)).get();
     if (!partner) return reply.code(404).send({ error: 'Partner not found' });
     if (!me?.plexToken) {
       return reply.code(400).send({ error: 'Watchlist mode needs your Plex account — sign in with Plex first' });
@@ -98,13 +107,14 @@ export async function watchWithRoutes(app: FastifyInstance) {
 
     const pick = overlap[crypto.randomInt(overlap.length)]!;
 
-    // If the pick is already in the library, return the full local record.
+    // If the pick is in the library (and still on the server), return the full
+    // local record; otherwise it's offered as a request.
     let mediaRow = null;
     for (const guid of pick.guids) {
       if (guid.startsWith('imdb://')) {
-        mediaRow = db.select().from(media).where(eq(media.imdbId, guid.slice(7))).get() ?? null;
+        mediaRow = db.select().from(media).where(and(eq(media.imdbId, guid.slice(7)), isNull(media.removedAt))).get() ?? null;
       } else if (guid.startsWith('tmdb://')) {
-        mediaRow = db.select().from(media).where(eq(media.tmdbId, guid.slice(7))).get() ?? null;
+        mediaRow = db.select().from(media).where(and(eq(media.tmdbId, guid.slice(7)), isNull(media.removedAt))).get() ?? null;
       }
       if (mediaRow) break;
     }
@@ -117,7 +127,7 @@ export async function watchWithRoutes(app: FastifyInstance) {
       type: pick.type,
       media: mediaRow ? serializeMedia(mediaRow) : null,
       tmdbId: tmdbGuid ? Number(tmdbGuid.slice(7)) : null,
-      requestsEnabled: !!getSeerrConfig(),
+      requestsEnabled: await canRequest(requesterFor(request.user!)),
     };
   });
 }

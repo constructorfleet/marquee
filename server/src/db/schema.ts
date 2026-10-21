@@ -91,6 +91,10 @@ export const media = sqliteTable(
   actors: text('actors'), // JSON array of names
     // Watch status as seen by the media-server account used for syncing.
     watched: integer('watched', { mode: 'boolean' }).notNull().default(false),
+    // Set when a sync no longer finds the title on its server: hidden from search,
+    // the randomizer and new polls, but kept so old polls and lists still show it.
+    // Cleared if the title comes back.
+    removedAt: integer('removed_at', { mode: 'timestamp' }),
     syncedAt: integer('synced_at', { mode: 'timestamp' })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -185,6 +189,8 @@ export const votes = sqliteTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     // The name a guest typed on a public poll link (null for signed-in and Discord votes).
     voterName: text('voter_name'),
+    // A keyed hash of the network a guest voted from, for the per-network cap (never the IP itself).
+    voterNetwork: text('voter_network'),
     createdAt: integer('created_at', { mode: 'timestamp' })
       .notNull()
       .$defaultFn(() => new Date()),

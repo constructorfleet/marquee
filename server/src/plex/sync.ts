@@ -18,6 +18,11 @@ function normalizeItem(item: PlexItem, sectionTitle: string): NormalizedItem {
     if (guid.id.startsWith('imdb://')) imdbId = guid.id.slice(7);
     else if (guid.id.startsWith('tmdb://')) tmdbId = guid.id.slice(7);
   }
+  // Items matched by Plex's legacy agents have no Guid list, just one agent id.
+  if (!imdbId && !tmdbId && item.guid) {
+    imdbId = /agents\.imdb:\/\/(tt\d+)/.exec(item.guid)?.[1] ?? null;
+    tmdbId = /agents\.themoviedb:\/\/(\d+)/.exec(item.guid)?.[1] ?? null;
+  }
   // Shows count as watched when every episode has been viewed; movies when viewed at least once.
   const watched =
     item.type === 'show'
@@ -60,6 +65,7 @@ export async function fetchPlexData(): Promise<SourceSyncData> {
 
   const items: NormalizedItem[] = [];
   const collections: NormalizedCollection[] = [];
+  let collectionsComplete = true;
 
   for (const section of sections) {
     const metadata = await getSectionItems(cfg.url, cfg.token, section.key);
@@ -68,25 +74,28 @@ export async function fetchPlexData(): Promise<SourceSyncData> {
       items.push(normalizeItem(item, section.title));
     }
 
-    // Collections are optional (older servers may not expose the endpoint) — skip on failure.
+    // Collections are optional (older servers may not expose the endpoint) — skip on
+    // failure, and don't let the writer prune collections it simply didn't see.
     let plexCollections;
     try {
       plexCollections = await getSectionCollections(cfg.url, cfg.token, section.key);
     } catch {
+      collectionsComplete = false;
       continue;
     }
+    // A failed member fetch is null, not [], so the writer keeps that collection's members.
     const children = await mapLimit(plexCollections, COLLECTION_CONCURRENCY, (c) =>
-      getCollectionChildren(cfg.url, cfg.token, c.ratingKey).catch(() => []),
+      getCollectionChildren(cfg.url, cfg.token, c.ratingKey).catch(() => null),
     );
     plexCollections.forEach((c, i) => {
       collections.push({
         ratingKey: c.ratingKey,
         title: c.title,
         librarySection: section.title,
-        childRatingKeys: children[i]!.map((ch) => ch.ratingKey),
+        childRatingKeys: children[i]?.map((ch) => ch.ratingKey) ?? null,
       });
     });
   }
 
-  return { source: 'plex', sections: sections.length, items, collections };
+  return { source: 'plex', serverId: machineId, sections: sections.length, items, collections, collectionsComplete };
 }

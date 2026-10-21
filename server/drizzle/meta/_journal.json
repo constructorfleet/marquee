@@ -120,6 +120,20 @@
       "when": 1792588814764,
       "tag": "0016_daily_butterfly",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1792594673215,
+      "tag": "0017_aromatic_black_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1792595916620,
+      "tag": "0018_absurd_meteorite",
+      "breakpoints": true
     }
   ]
 }

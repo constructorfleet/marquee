@@ -26,12 +26,19 @@ export interface NormalizedCollection {
   ratingKey: string;
   title: string;
   librarySection: string | null;
-  childRatingKeys: string[];
+  // null when the members couldn't be fetched this time: keep the ones we have.
+  childRatingKeys: string[] | null;
 }
 
 export interface SourceSyncData {
   source: SourceKind;
+  // The server's own id (Plex machine identifier / Jellyfin server id), when
+  // known. ratingKeys only mean something on one server, so a change matters.
+  serverId: string | null;
   sections: number;
   items: NormalizedItem[];
   collections: NormalizedCollection[];
+  // False when some collection listing failed, so missing collections may just
+  // be unfetched: none are pruned this time.
+  collectionsComplete: boolean;
 }

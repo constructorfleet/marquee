@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { and, eq, gte, like, lte, type SQL } from 'drizzle-orm';
+import { and, eq, gte, isNull, like, lte, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { collectionItems, listItems, lists, media } from '../db/schema.js';
 import { dedupeMedia } from '../sources/dedupe.js';
@@ -24,14 +24,15 @@ export async function pickRandomMedia(
   filters: RandomFilters,
   viewer: { id: number; isAdmin: boolean },
 ): Promise<typeof media.$inferSelect | null> {
-  const conditions: SQL[] = [];
+  // Titles gone from the media server are never drawn, whatever the pool.
+  const conditions: SQL[] = [isNull(media.removedAt)];
   if (filters.type) conditions.push(eq(media.type, filters.type));
   if (filters.genre) conditions.push(like(media.genres, `%"${filters.genre}"%`));
   if (filters.section) conditions.push(eq(media.librarySection, filters.section));
   if (filters.yearFrom) conditions.push(gte(media.year, filters.yearFrom));
   if (filters.yearTo) conditions.push(lte(media.year, filters.yearTo));
   if (filters.minRating) conditions.push(gte(media.rating, filters.minRating));
-  const where = conditions.length ? and(...conditions) : undefined;
+  const where = and(...conditions);
 
   let rows: (typeof media.$inferSelect)[];
   if (filters.listId) {
@@ -43,7 +44,7 @@ export async function pickRandomMedia(
       .select({ media })
       .from(listItems)
       .innerJoin(media, eq(listItems.mediaId, media.id))
-      .where(conditions.length ? and(eq(listItems.listId, filters.listId), ...conditions) : eq(listItems.listId, filters.listId))
+      .where(and(eq(listItems.listId, filters.listId), ...conditions))
       .all()
       .map((r) => r.media);
   } else if (filters.collectionId) {
@@ -51,11 +52,7 @@ export async function pickRandomMedia(
       .select({ media })
       .from(collectionItems)
       .innerJoin(media, eq(collectionItems.mediaId, media.id))
-      .where(
-        conditions.length
-          ? and(eq(collectionItems.collectionId, filters.collectionId), ...conditions)
-          : eq(collectionItems.collectionId, filters.collectionId),
-      )
+      .where(and(eq(collectionItems.collectionId, filters.collectionId), ...conditions))
       .all()
       .map((r) => r.media);
   } else {
@@ -63,12 +60,13 @@ export async function pickRandomMedia(
   }
 
   // Cross-source duplicates would double-weight the draw — collapse them first.
-  rows = dedupeMedia(rows);
+  let pool = dedupeMedia(rows);
 
   if (filters.unwatchedOnly) {
+    // A title counts as watched if any of its copies is (e.g. seen on Jellyfin, drawn from Plex).
     const { set } = await watchedSetForUser(viewer.id);
-    rows = rows.filter((r) => !set.has(r.id));
+    pool = pool.filter((r) => !r.copyIds.some((id) => set.has(id)));
   }
 
-  return rows.length ? rows[crypto.randomInt(rows.length)]! : null;
+  return pool.length ? pool[crypto.randomInt(pool.length)]! : null;
 }

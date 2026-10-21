@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { collectionItems, collections, media } from '../db/schema.js';
 import { requireUser } from '../auth/plugin.js';
@@ -15,14 +15,20 @@ function isWatched(item: { id: number; watched: boolean }, watchedSet: Set<numbe
 export async function collectionRoutes(app: FastifyInstance) {
   app.get('/api/collections', { preHandler: requireUser }, async (request) => {
     const watchedSet = getWatchedSet(request.user!.id);
+    // Every collection's titles in one query (still on the server only), grouped here.
+    const byCollection = new Map<number, { id: number; watched: boolean }[]>();
+    for (const row of db
+      .select({ collectionId: collectionItems.collectionId, id: media.id, watched: media.watched })
+      .from(collectionItems)
+      .innerJoin(media, eq(collectionItems.mediaId, media.id))
+      .where(isNull(media.removedAt))
+      .all()) {
+      if (!byCollection.has(row.collectionId)) byCollection.set(row.collectionId, []);
+      byCollection.get(row.collectionId)!.push(row);
+    }
     const cols = db.select().from(collections).orderBy(asc(collections.title)).all();
     return cols.map((c) => {
-      const items = db
-        .select({ id: media.id, watched: media.watched })
-        .from(collectionItems)
-        .innerJoin(media, eq(collectionItems.mediaId, media.id))
-        .where(eq(collectionItems.collectionId, c.id))
-        .all();
+      const items = byCollection.get(c.id) ?? [];
       return {
         id: c.id,
         title: c.title,
@@ -42,7 +48,7 @@ export async function collectionRoutes(app: FastifyInstance) {
       .select({ media })
       .from(collectionItems)
       .innerJoin(media, eq(collectionItems.mediaId, media.id))
-      .where(eq(collectionItems.collectionId, col.id))
+      .where(and(eq(collectionItems.collectionId, col.id), isNull(media.removedAt)))
       .all()
       .map((r) => ({ ...serializeMedia(r.media), watchedByMe: isWatched(r.media, watchedSet) }));
     // Watched first is confusing for "what should we watch next" — unwatched first.

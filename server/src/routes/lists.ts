@@ -102,6 +102,7 @@ export async function listRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
     const item = db.select().from(media).where(eq(media.id, parsed.data.mediaId)).get();
     if (!item) return reply.code(404).send({ error: 'Media not found' });
+    if (item.removedAt) return reply.code(409).send({ error: 'That title is no longer in your library' });
     db.insert(listItems)
       .values({ listId: list.id, mediaId: item.id })
       .onConflictDoNothing()

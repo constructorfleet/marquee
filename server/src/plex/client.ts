@@ -22,6 +22,7 @@ export interface PlexItem {
   Director?: { tag: string }[];
   Role?: { tag: string }[];
   Guid?: { id: string }[]; // e.g. imdb://tt0087469, tmdb://8681 (needs includeGuids=1)
+  guid?: string; // legacy agents carry their one id here, e.g. com.plexapp.agents.imdb://tt0087469?lang=en
 }
 
 export interface PlexCollection {

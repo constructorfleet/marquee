@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import { eq, sql } from 'drizzle-orm';
+import { eq, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
-import { polls, sessions, users } from '../db/schema.js';
+import { polls, sessions, users, votes } from '../db/schema.js';
 import { requireAdmin } from '../auth/plugin.js';
 import { runIntegrityCheck } from '../db/health.js';
 import { hashPassword } from '../auth/passwords.js';
@@ -10,7 +10,7 @@ import { uniqueUsername, usernameTaken } from '../auth/usernames.js';
 import { getFriends, getHomeUsers } from '../plex/plextv.js';
 import { getPlexConfig } from '../settings.js';
 
-function serializeUser(u: typeof users.$inferSelect) {
+function serializeUser(u: typeof users.$inferSelect, guestName: string | null = null) {
   return {
     id: u.id,
     username: u.username,
@@ -22,13 +22,29 @@ function serializeUser(u: typeof users.$inferSelect) {
     discord: !!u.discordId,
     oidc: !!u.oidcSub,
     guest: !!u.guestId,
+    guestName,
     createdAt: u.createdAt,
   };
 }
 
 export async function adminUserRoutes(app: FastifyInstance) {
   app.get('/api/admin/users', { preHandler: requireAdmin }, async () => {
-    return db.select().from(users).orderBy(sql`lower(${users.username})`).all().map(serializeUser);
+    // Guests' usernames are internal, so show the name each last voted under.
+    const guestNames = new Map(
+      db
+        .select({ userId: votes.userId, name: votes.voterName })
+        .from(votes)
+        .where(isNotNull(votes.voterName))
+        .orderBy(votes.createdAt)
+        .all()
+        .map((v) => [v.userId, v.name]),
+    );
+    return db
+      .select()
+      .from(users)
+      .orderBy(sql`lower(${users.username})`)
+      .all()
+      .map((u) => serializeUser(u, guestNames.get(u.id) ?? null));
   });
 
   // Manually create a local account (username + password).

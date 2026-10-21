@@ -1,4 +1,4 @@
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { logger } from '../logger.js';
 import { media, tmdbCollectionParts, tmdbCollections } from '../db/schema.js';
@@ -41,7 +41,9 @@ export function startFranchiseScan(): ScanState {
   const pending = db
     .select({ id: media.id, tmdbId: media.tmdbId })
     .from(media)
-    .where(and(eq(media.type, 'movie'), isNotNull(media.tmdbId), eq(media.tmdbCollectionChecked, false)))
+    .where(
+      and(eq(media.type, 'movie'), isNotNull(media.tmdbId), eq(media.tmdbCollectionChecked, false), isNull(media.removedAt)),
+    )
     .all();
 
   Object.assign(state, {

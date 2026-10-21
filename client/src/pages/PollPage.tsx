@@ -265,6 +265,7 @@ export function PollPage() {
                   {option.title}
                   {isMyVote && ' ✓'}
                 </p>
+                {option.removed && <p className="text-[11px] text-stone-500">No longer in your library</p>}
                 {showResults && (
                   <>
                     <div className="h-1.5 overflow-hidden rounded-full bg-ink-700">
