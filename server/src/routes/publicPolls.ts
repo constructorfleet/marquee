@@ -4,19 +4,19 @@ import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import { media, pollOptions, polls, users, votes } from '../db/schema.js';
-import { requireAdmin } from '../auth/plugin.js';
+import { cookieSecure, requireAdmin } from '../auth/plugin.js';
 import { updatePollMessage } from '../discord/bot.js';
 import { emitPollUpdate, streamPollEvents } from '../events.js';
 import { serializePollDetail, serializePublicPoll } from '../polls/service.js';
-import { GUEST_VOTES_PER_NETWORK, guestUsername, networkFingerprint } from '../polls/guests.js';
+import { guestUsername, guestVoteRejection, networkFingerprint } from '../polls/guests.js';
 import { streamPoster } from './media.js';
 
 // Public poll links: an admin can share a poll at /vote/<publicToken> so people
 // without a Marquee account can vote. Each browser gets a guest account (like
 // the Discord bot's shadow accounts), so the votes table's one-vote-per-account
 // rule still applies. Guests also give a name, and a name can only vote once
-// per poll; each network is capped too (see polls/guests.ts). Signed-in
-// visitors vote as themselves.
+// per poll; guest votes are capped per network and per poll too (see
+// polls/guests.ts). Signed-in visitors vote as themselves.
 
 const VOTER_COOKIE = 'marquee_voter';
 const VOTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365; // a year, in seconds
@@ -68,7 +68,7 @@ function guestAccountId(request: FastifyRequest, reply: FastifyReply): number {
     httpOnly: true,
     sameSite: 'lax',
     signed: true,
-    secure: request.protocol === 'https',
+    secure: cookieSecure(request),
     maxAge: VOTER_COOKIE_MAX_AGE,
   });
   return db
@@ -139,14 +139,8 @@ export async function publicPollRoutes(app: FastifyInstance) {
         return reply.code(409).send({ error: 'That name is already taken in this poll — add an initial or a nickname' });
       }
       voterNetwork = networkFingerprint(request.ip);
-      const fromNetwork = db
-        .select({ n: sql<number>`count(*)` })
-        .from(votes)
-        .where(and(eq(votes.pollId, poll.id), eq(votes.voterNetwork, voterNetwork)))
-        .get()!.n;
-      if (fromNetwork >= GUEST_VOTES_PER_NETWORK) {
-        return reply.code(429).send({ error: 'Lots of guests have already voted from your network on this poll — sign in to vote' });
-      }
+      const rejection = guestVoteRejection(poll.id, voterNetwork);
+      if (rejection) return reply.code(429).send({ error: rejection });
       userId = guestAccountId(request, reply);
     }
 
