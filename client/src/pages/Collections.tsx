@@ -6,6 +6,7 @@ import type {
   FranchiseDetail,
   FranchisesResponse,
   MediaItem,
+  RandomPick,
   TraktDeviceStart,
   TraktStatus,
 } from '@marquee/shared';
@@ -159,13 +160,19 @@ function TraktCard() {
     const tick = async () => {
       if (cancelled) return;
       try {
-        const res = await api<{ pending?: boolean; watchedCount?: number }>('/api/trakt/poll', {
-          body: { deviceCode: device.deviceCode },
-        });
+        const res = await api<{ pending?: boolean; watchedCount?: number; syncError?: string | null }>(
+          '/api/trakt/poll',
+          { body: { deviceCode: device.deviceCode } },
+        );
         if (cancelled) return;
         if (!res.pending) {
           setDevice(null);
-          setMessage(`✓ Trakt connected — matched ${res.watchedCount ?? 0} watched titles in your library`);
+          // A connected token whose import failed otherwise reads as "watched nothing".
+          setMessage(
+            res.syncError
+              ? `Trakt connected, but importing your history failed: ${res.syncError} — press Refresh to retry`
+              : `✓ Trakt connected — matched ${res.watchedCount ?? 0} watched titles in your library`,
+          );
           queryClient.invalidateQueries({ queryKey: ['trakt'] });
           queryClient.invalidateQueries({ queryKey: ['collections'] });
           return;
@@ -291,7 +298,7 @@ export function Collections() {
 
   const spinUnwatched = useMutation({
     mutationFn: (collectionId: number) =>
-      api<MediaItem>('/api/media/random', { body: { collectionId, unwatchedOnly: true } }),
+      api<RandomPick>('/api/media/random', { body: { collectionId, unwatchedOnly: true } }),
     onSuccess: (item) => {
       setSpinError(null);
       setPick(item);

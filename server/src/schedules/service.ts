@@ -15,9 +15,13 @@ export function parseFilters(row: ScheduleRow): RandomFilters {
   }
 }
 
-// Execute one schedule: draw a pick, record it, one-shots disable themselves,
-// and optionally announce on Discord.
-export async function runSchedule(row: ScheduleRow): Promise<typeof media.$inferSelect | null> {
+// Execute one schedule: draw a pick, record it, and optionally announce on
+// Discord. Only `scheduled` runs retire a one-shot — "Run now" is a preview and
+// must not cancel the occurrence the user is still waiting for.
+export async function runSchedule(
+  row: ScheduleRow,
+  opts: { scheduled?: boolean } = {},
+): Promise<typeof media.$inferSelect | null> {
   // An unattended schedule draws only from lists its creator personally owns
   // or that are shared — never via admin override in a background job.
   const { pick } = await pickRandomMedia(parseFilters(row), { id: row.createdBy, isAdmin: false });
@@ -25,7 +29,7 @@ export async function runSchedule(row: ScheduleRow): Promise<typeof media.$infer
     .set({
       lastRunAt: new Date(),
       lastPickMediaId: pick?.id ?? null,
-      ...(row.kind === 'once' ? { enabled: false } : {}),
+      ...(opts.scheduled && row.kind === 'once' ? { enabled: false } : {}),
     })
     .where(eq(scheduledPicks.id, row.id))
     .run();
@@ -39,21 +43,52 @@ export async function runSchedule(row: ScheduleRow): Promise<typeof media.$infer
 // only disabled once it finishes — without this it would fire again next minute.
 const inFlight = new Set<number>();
 
+// How late a weekly occurrence may still be caught up. Longer than any DST
+// shift, so the hour the clocks move never pushes a genuinely due pick out of
+// range; short enough that a pick announced after downtime is still tonight's
+// rather than some previous week's.
+const CATCH_UP_MS = 2 * 60 * 60 * 1000;
+
+// Most recent dayOfWeek/timeOfDay in server-local time at or before `now`.
+// Matching the occurrence instead of the wall clock makes a run idempotent
+// across the repeated hour when clocks go back, and lets a tick that arrives
+// late still fire. A time lost to the spring-forward gap lands on the next
+// valid minute, which is where Date resolves it.
+function lastWeeklyOccurrence(now: Date, dayOfWeek: number, timeOfDay: string): Date {
+  const [h, m] = timeOfDay.split(':').map(Number);
+  const at = new Date(now);
+  at.setHours(h ?? 0, m ?? 0, 0, 0);
+  at.setDate(at.getDate() - ((at.getDay() - dayOfWeek + 7) % 7));
+  if (at.getTime() > now.getTime()) at.setDate(at.getDate() - 7);
+  return at;
+}
+
+// Occurrences already reported as missed, so one stale schedule doesn't log every minute.
+const reportedMissed = new Map<number, number>();
+
 // Called every minute by the scheduler.
 export function runDueSchedules(now: Date): void {
-  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   const rows = db.select().from(scheduledPicks).where(eq(scheduledPicks.enabled, true)).all();
   for (const row of rows) {
-    const due =
-      row.kind === 'weekly'
-        ? row.dayOfWeek === now.getDay() &&
-          row.timeOfDay === hhmm &&
-          // restart guard: never run the same weekly twice inside one minute window
-          (!row.lastRunAt || now.getTime() - row.lastRunAt.getTime() > 90_000)
-        : row.runAt !== null && row.runAt.getTime() <= now.getTime();
+    let due: boolean;
+    if (row.kind === 'weekly') {
+      if (row.dayOfWeek === null || !row.timeOfDay) continue;
+      const occurrence = lastWeeklyOccurrence(now, row.dayOfWeek, row.timeOfDay).getTime();
+      const pending = !row.lastRunAt || row.lastRunAt.getTime() < occurrence;
+      due = pending && now.getTime() - occurrence <= CATCH_UP_MS;
+      if (pending && !due && reportedMissed.get(row.id) !== occurrence) {
+        reportedMissed.set(row.id, occurrence);
+        logger.warn(
+          { schedule: row.name, occurrence: new Date(occurrence).toISOString() },
+          'scheduled pick missed and too stale to catch up',
+        );
+      }
+    } else {
+      due = row.runAt !== null && row.runAt.getTime() <= now.getTime();
+    }
     if (!due || inFlight.has(row.id)) continue;
     inFlight.add(row.id);
-    runSchedule(row)
+    runSchedule(row, { scheduled: true })
       .catch((err) => logger.error({ err, schedule: row.name }, 'scheduled pick failed'))
       .finally(() => inFlight.delete(row.id));
   }

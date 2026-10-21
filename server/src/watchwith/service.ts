@@ -83,12 +83,14 @@ export async function watchedSetForUser(userId: number): Promise<{ set: Set<numb
 // Up to `limit` media ids the user watched most recently, newest first, from the
 // same source priority as watchedSetForUser. Empty for 'sync-account': those
 // flags belong to the sync account and carry no times, so recency is unknown.
+// `stale` marks an empty result the user can fix by re-syncing Trakt, as opposed
+// to one that genuinely means "watched nothing".
 export async function recentlyWatchedForUser(
   userId: number,
   limit: number,
-): Promise<{ mediaIds: number[]; method: WatchedMethod }> {
-  const traktIds = getRecentWatchedIds(userId, limit);
-  if (traktIds) return { mediaIds: traktIds, method: 'trakt' };
+): Promise<{ mediaIds: number[]; method: WatchedMethod; stale: boolean }> {
+  const trakt = getRecentWatchedIds(userId, limit);
+  if (trakt) return { mediaIds: trakt.mediaIds, method: 'trakt', stale: trakt.undated };
 
   const token = ownPlexToken(userId);
   if (token) {
@@ -99,11 +101,11 @@ export async function recentlyWatchedForUser(
         .sort((a, b) => b[1] - a[1])
         .slice(0, limit)
         .map(([id]) => id);
-      return { mediaIds, method: 'plex' };
+      return { mediaIds, method: 'plex', stale: false };
     }
   }
 
-  return { mediaIds: [], method: 'sync-account' };
+  return { mediaIds: [], method: 'sync-account', stale: false };
 }
 
 // plex.tv Discover watchlist for one account.
@@ -117,7 +119,12 @@ export interface WatchlistItem {
 export async function fetchWatchlist(token: string): Promise<WatchlistItem[]> {
   const url = new URL('https://discover.provider.plex.tv/library/sections/watchlist/all');
   url.searchParams.set('includeGuids', '1');
-  const res = await fetch(url, { headers: { 'X-Plex-Token': token, Accept: 'application/json' } });
+  const res = await fetch(url, {
+    headers: { 'X-Plex-Token': token, Accept: 'application/json' },
+    // Two of these run concurrently per request; without it a stalled plex.tv
+    // holds the caller for undici's 300 s header and body timeouts.
+    signal: AbortSignal.timeout(15_000),
+  });
   if (!res.ok) throw new Error(`plex.tv watchlist request failed (${res.status})`);
   const json = (await res.json()) as {
     MediaContainer?: { Metadata?: { title: string; year?: number; type?: string; Guid?: { id: string }[] }[] };

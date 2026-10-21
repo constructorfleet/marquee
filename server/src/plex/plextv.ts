@@ -8,6 +8,11 @@ import { getMachineIdentifier } from './client.js';
 
 const PLEX_TV = 'https://plex.tv';
 
+// Without this, a stalled plex.tv holds each request for undici's 300 s header
+// and body timeouts. getServerAccessToken sits on the per-user watch-history
+// tier, so that stall would hang a randomizer spin, not just a sign-in.
+const PLEX_TV_TIMEOUT_MS = 15_000;
+
 // A stable client identifier is required for the PIN flow; generate once and persist.
 export function getClientId(): string {
   let id = getSetting('plex.clientId');
@@ -30,6 +35,7 @@ export async function createLoginPin(): Promise<{ id: number; code: string }> {
   const res = await fetch(`${PLEX_TV}/api/v2/pins?strong=true`, {
     method: 'POST',
     headers: plexTvHeaders(),
+    signal: AbortSignal.timeout(PLEX_TV_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`plex.tv PIN request failed (${res.status})`);
   const json = (await res.json()) as { id: number; code: string };
@@ -49,7 +55,10 @@ export function buildAuthUrl(code: string, forwardUrl?: string): string {
 
 // Returns the account token once the user has approved the PIN, else null.
 export async function checkLoginPin(id: number): Promise<string | null> {
-  const res = await fetch(`${PLEX_TV}/api/v2/pins/${id}`, { headers: plexTvHeaders() });
+  const res = await fetch(`${PLEX_TV}/api/v2/pins/${id}`, {
+    headers: plexTvHeaders(),
+    signal: AbortSignal.timeout(PLEX_TV_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`plex.tv PIN check failed (${res.status})`);
   const json = (await res.json()) as { authToken?: string | null };
   return json.authToken || null;
@@ -60,6 +69,7 @@ export async function getPlexAccount(
 ): Promise<{ id: number; username: string; thumb: string | null }> {
   const res = await fetch(`${PLEX_TV}/api/v2/user`, {
     headers: { ...plexTvHeaders(), 'X-Plex-Token': token },
+    signal: AbortSignal.timeout(PLEX_TV_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`plex.tv account lookup failed (${res.status})`);
   const json = (await res.json()) as { id: number; username?: string; title?: string; thumb?: string };
@@ -79,6 +89,7 @@ export interface PlexHomeUser {
 export async function getHomeUsers(ownerToken: string): Promise<PlexHomeUser[]> {
   const res = await fetch(`${PLEX_TV}/api/v2/home/users`, {
     headers: { ...plexTvHeaders(), 'X-Plex-Token': ownerToken },
+    signal: AbortSignal.timeout(PLEX_TV_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`plex.tv home-users request failed (${res.status})`);
   const json = (await res.json()) as PlexHomeUser[] | { users?: PlexHomeUser[] };
@@ -95,6 +106,7 @@ export interface PlexFriend {
 export async function getFriends(ownerToken: string): Promise<PlexFriend[]> {
   const res = await fetch(`${PLEX_TV}/api/v2/friends`, {
     headers: { ...plexTvHeaders(), 'X-Plex-Token': ownerToken },
+    signal: AbortSignal.timeout(PLEX_TV_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`plex.tv friends request failed (${res.status})`);
   const json = (await res.json()) as PlexFriend[] | { friends?: PlexFriend[] };
@@ -114,6 +126,7 @@ async function findServerResource(
   if (!machineId) throw new Error('Could not identify the Plex server — check the Plex settings in Admin');
   const res = await fetch(`${PLEX_TV}/api/v2/resources?includeHttps=1`, {
     headers: { ...plexTvHeaders(), 'X-Plex-Token': userToken },
+    signal: AbortSignal.timeout(PLEX_TV_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`plex.tv resources request failed (${res.status})`);
   const resources = (await res.json()) as { clientIdentifier?: string; provides?: string; accessToken?: string }[];
@@ -132,7 +145,10 @@ async function verifiedServerToken(server: { url: string; token: string }, userT
   const accessToken = (await findServerResource(server, userToken))?.accessToken;
   if (!accessToken) return null;
   const url = new URL('library/sections', server.url.endsWith('/') ? server.url : `${server.url}/`);
-  const res = await fetch(url, { headers: { 'X-Plex-Token': accessToken, Accept: 'application/json' } });
+  const res = await fetch(url, {
+    headers: { 'X-Plex-Token': accessToken, Accept: 'application/json' },
+    signal: AbortSignal.timeout(PLEX_TV_TIMEOUT_MS),
+  });
   if (res.ok) return accessToken;
   if (res.status === 401 || res.status === 403) return null;
   throw new Error(`Plex server access check failed (${res.status})`);

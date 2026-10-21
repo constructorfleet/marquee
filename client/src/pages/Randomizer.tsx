@@ -31,7 +31,9 @@ function describeSimilar(info: SimilarToRecentInfo): string {
     case 'applied':
       return `Picked from ${info.matchCount} title${info.matchCount === 1 ? '' : 's'} like your last ${info.seedCount} watched.`;
     case 'no-history':
-      return 'No dated watch history for you yet, so this spin used the other filters only. Connect Trakt on your account page to seed from your history.';
+      return 'No dated watch history for you yet, so this spin used the other filters only. Sign in with Plex, or connect Trakt, so Marquee can see what you have watched.';
+    case 'history-stale':
+      return 'Your Trakt history has no watch dates yet, so this spin used the other filters only. Refresh Trakt on your account page.';
     case 'not-configured':
       return 'No request service is set up, so this spin used the other filters only.';
     case 'unsupported':
@@ -106,6 +108,11 @@ export function Randomizer() {
   // The current UI state as RandomFilters — used by both spins and saved schedules.
   const buildFilters = (): RandomFilters => {
     const filters: RandomFilters = {};
+    if (similarToRecent) {
+      filters.similarToRecent = true;
+      filters.recentSeedCount = recentSeedCount;
+    }
+    // Lists offer the similar-to-recent filter only; the rest stay off the UI.
     if (source.kind === 'list') {
       filters.listId = source.id;
       return filters;
@@ -113,10 +120,6 @@ export function Randomizer() {
     if (typeFilter !== 'all') filters.type = typeFilter;
     if (genre) filters.genre = genre;
     if (unwatchedOnly) filters.unwatchedOnly = true;
-    if (similarToRecent) {
-      filters.similarToRecent = true;
-      filters.recentSeedCount = recentSeedCount;
-    }
     if (yearFrom) filters.yearFrom = Number(yearFrom);
     if (yearTo) filters.yearTo = Number(yearTo);
     if (minRating) filters.minRating = Number(minRating);
@@ -126,10 +129,7 @@ export function Randomizer() {
   };
 
   const spin = useMutation({
-    mutationFn: () => {
-      if (source.kind === 'list') return api<RandomPick>(`/api/lists/${source.id}/random`, { body: {} });
-      return api<RandomPick>('/api/media/random', { body: buildFilters() });
-    },
+    mutationFn: () => api<RandomPick>('/api/media/random', { body: buildFilters() }),
     onSuccess: (item) => {
       setSimilarInfo(item.similarToRecent ?? null);
       // A short delay makes the reveal feel like a drum roll instead of a database query.
@@ -290,42 +290,43 @@ export function Randomizer() {
               <option value="7">★ 7+</option>
               <option value="8">★ 8+</option>
             </select>
-            <div className="col-span-2 space-y-2 border-t border-neon-500/10 pt-3">
-              <label className="flex items-center gap-2 text-sm text-stone-300">
-                <input
-                  type="checkbox"
-                  checked={similarToRecent}
-                  onChange={(e) => setSimilarToRecent(e.target.checked)}
-                  className="accent-neon-400"
-                />
-                Like what I’ve been watching
-              </label>
-              {similarToRecent && (
-                <div className="flex items-center gap-2 pl-6">
-                  <span className="text-xs text-stone-400">Seed from my last</span>
-                  <select
-                    className="input w-auto py-1 text-xs"
-                    value={recentSeedCount}
-                    onChange={(e) => setRecentSeedCount(Number(e.target.value))}
-                  >
-                    {SEED_OPTIONS.map((n) => (
-                      <option key={n} value={n}>
-                        {n} titles
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {similarToRecent && (
-                <p className="pl-6 text-xs text-stone-500">
-                  Narrows to library titles your request service suggests from your own recent watches. If it can’t,
-                  the spin still happens and says so.
-                </p>
-              )}
-            </div>
           </div>
         )}
-        {isList && <p className="text-xs text-stone-500">Filters don’t apply to lists.</p>}
+        {isList && <p className="text-xs text-stone-500">Lists ignore every filter except the one below.</p>}
+
+        <div className="space-y-2 border-t border-neon-500/10 pt-3 text-left">
+          <label className="flex items-center gap-2 text-sm text-stone-300">
+            <input
+              type="checkbox"
+              checked={similarToRecent}
+              onChange={(e) => setSimilarToRecent(e.target.checked)}
+              className="accent-neon-400"
+            />
+            Like what I’ve been watching
+          </label>
+          {similarToRecent && (
+            <div className="flex items-center gap-2 pl-6">
+              <span className="text-xs text-stone-400">Seed from my last</span>
+              <select
+                className="input w-auto py-1 text-xs"
+                value={recentSeedCount}
+                onChange={(e) => setRecentSeedCount(Number(e.target.value))}
+              >
+                {SEED_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n} titles
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {similarToRecent && (
+            <p className="pl-6 text-xs text-stone-500">
+              Narrows to library titles your request service suggests from your own recent watches. If it can’t, the
+              spin still happens and says so.
+            </p>
+          )}
+        </div>
 
         <button
           className="btn btn-neon w-full text-base"

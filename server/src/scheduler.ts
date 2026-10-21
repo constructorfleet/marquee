@@ -39,6 +39,10 @@ function closeDuePolls(now: Date) {
 // closesAt has passed, fire any due scheduled randomizer picks, start the
 // automatic library sync when it's due, and check the database once a day. Each step is isolated so one failing
 // (e.g. SQLITE_BUSY while a backup holds a lock) doesn't skip the others.
+// croner computes the next tick from now, so a tick overrunning 60s swallows the
+// following minute. Polls, picks and the library sync fire on a due timestamp
+// rather than an exact wall-clock match, so they catch up on the next tick;
+// dailyIntegrityCheck below still matches the clock and can be swallowed.
 export function startScheduler() {
   const steps: [string, (now: Date) => void][] = [
     ['scheduled picks', runDueSchedules],
