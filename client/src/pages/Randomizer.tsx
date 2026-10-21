@@ -31,7 +31,7 @@ function describeSimilar(info: SimilarToRecentInfo): string {
     case 'applied':
       return `Picked from ${info.matchCount} title${info.matchCount === 1 ? '' : 's'} like your last ${info.seedCount} watched.`;
     case 'no-history':
-      return 'No dated watch history for you yet, so this spin used the other filters only. Connect Trakt on your account page to seed from your history.';
+      return 'No dated watch history for you yet, so this spin used the other filters only. Sign in with Plex, or connect Trakt, so Marquee can see what you have watched.';
     case 'history-stale':
       return 'Your Trakt history has no watch dates yet, so this spin used the other filters only. Refresh Trakt on your account page.';
     case 'not-configured':
