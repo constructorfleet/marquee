@@ -1,12 +1,13 @@
 import type { FastifyInstance } from 'fastify';
-import { eq, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
-import { polls, sessions, users, votes } from '../db/schema.js';
+import { lists, pollOptions, polls, sessions, users, votes } from '../db/schema.js';
 import { requireAdmin } from '../auth/plugin.js';
 import { runIntegrityCheck } from '../db/health.js';
 import { hashPassword } from '../auth/passwords.js';
 import { uniqueUsername, usernameTaken } from '../auth/usernames.js';
+import { getOptionCounts } from '../polls/service.js';
 import { getFriends, getHomeUsers } from '../plex/plextv.js';
 import { getPlexConfig } from '../settings.js';
 
@@ -25,6 +26,18 @@ function serializeUser(u: typeof users.$inferSelect, guestName: string | null = 
     guestName,
     createdAt: u.createdAt,
   };
+}
+
+// Redoes a closed poll's winner once one vote is gone: votes cascade on user
+// delete, winnerOptionId does not. 'tie' defers to closePoll's own tie-break.
+function winnerWithoutVote(pollId: number, dropOptionId: number): number | null | 'tie' {
+  const options = db.select({ id: pollOptions.id }).from(pollOptions).where(eq(pollOptions.pollId, pollId)).all();
+  const counts = getOptionCounts(pollId);
+  const left = (optionId: number) => (counts.get(optionId) ?? 0) - (optionId === dropOptionId ? 1 : 0);
+  const max = Math.max(0, ...options.map((o) => left(o.id)));
+  if (max === 0) return null;
+  const top = options.filter((o) => left(o.id) === max);
+  return top.length === 1 ? top[0]!.id : 'tie';
 }
 
 export async function adminUserRoutes(app: FastifyInstance) {
@@ -110,8 +123,48 @@ export async function adminUserRoutes(app: FastifyInstance) {
     if (pollCount > 0) {
       return reply.code(409).send({ error: `${user.username} created ${pollCount} poll(s) — delete those first` });
     }
-    db.delete(users).where(eq(users.id, id)).run();
-    return reply.code(204).send();
+
+    // Each closed poll they voted in loses that vote, so its frozen winner can
+    // name an option that no longer leads — recompute before deleting.
+    const closedVotes = db
+      .select({ pollId: votes.pollId, optionId: votes.optionId, winnerOptionId: polls.winnerOptionId })
+      .from(votes)
+      .innerJoin(polls, eq(votes.pollId, polls.id))
+      .where(and(eq(votes.userId, id), eq(polls.status, 'closed')))
+      .all();
+    const rewinners: { pollId: number; winnerOptionId: number | null }[] = [];
+    const tied: number[] = [];
+    for (const v of closedVotes) {
+      const winner = winnerWithoutVote(v.pollId, v.optionId);
+      if (winner === 'tie') tied.push(v.pollId);
+      else if (winner !== v.winnerOptionId) rewinners.push({ pollId: v.pollId, winnerOptionId: winner });
+    }
+    if (tied.length) {
+      return reply.code(409).send({
+        error: `Deleting ${user.username} would leave ${tied.length} closed poll(s) tied — delete those polls first`,
+      });
+    }
+
+    // Lists cascade from their owner, so a departing housemate's shared list
+    // would vanish for everyone using it. Hand them to the acting admin instead.
+    const reassigned = db
+      .select({ name: lists.name })
+      .from(lists)
+      .where(and(eq(lists.ownerId, id), eq(lists.isShared, true)))
+      .all()
+      .map((l) => l.name);
+
+    db.transaction((tx) => {
+      for (const r of rewinners) {
+        tx.update(polls).set({ winnerOptionId: r.winnerOptionId }).where(eq(polls.id, r.pollId)).run();
+      }
+      tx.update(lists)
+        .set({ ownerId: request.user!.id })
+        .where(and(eq(lists.ownerId, id), eq(lists.isShared, true)))
+        .run();
+      tx.delete(users).where(eq(users.id, id)).run();
+    });
+    return { reassignedLists: reassigned, recountedPolls: rewinners.length };
   });
 
   // Import Plex Home members and friends as Marquee accounts (like Overseerr's
