@@ -89,15 +89,18 @@ export async function pollRoutes(app: FastifyInstance) {
     const items = pollableMedia(mediaIds);
     if (items.length < 2) return reply.code(400).send({ error: 'A poll needs at least two valid options' });
 
+    // A scheduled open time wins over "open now": the scheduler opens the draft when it's due.
+    const opensAtDate = parseDate(opensAt);
+
     const poll = db
       .insert(polls)
       .values({
         title,
         description: description || null,
         shareToken: crypto.randomBytes(9).toString('base64url'),
-        status: openNow ? 'open' : 'draft',
+        status: openNow && !opensAtDate ? 'open' : 'draft',
         createdBy: request.user!.id,
-        opensAt: parseDate(opensAt),
+        opensAt: opensAtDate,
         closesAt: parseDate(closesAt),
       })
       .returning()
