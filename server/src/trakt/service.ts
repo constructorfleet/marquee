@@ -98,6 +98,17 @@ export function getWatchedSet(userId: number): Set<number> | null {
   return new Set(rows.map((r) => r.mediaId));
 }
 
+// True when the user has watched rows at all. Distinguishes "rows exist but
+// none dated, so a re-sync helps" from an empty Trakt account, where it can't.
+export function hasWatchedRows(userId: number): boolean {
+  return !!db
+    .select({ mediaId: userWatched.mediaId })
+    .from(userWatched)
+    .where(eq(userWatched.userId, userId))
+    .limit(1)
+    .get();
+}
+
 // The user's most recently watched media ids, newest first, or null when they
 // haven't connected Trakt. Rows from before watched_at existed carry no time
 // and are left out rather than guessed at. Connected-but-undated stays an empty
