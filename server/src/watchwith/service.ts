@@ -5,7 +5,7 @@ import { media, users } from '../db/schema.js';
 import { getSectionItems, getSections } from '../plex/client.js';
 import { getServerAccessToken } from '../plex/plextv.js';
 import { getPlexConfig } from '../settings.js';
-import { getRecentWatchedIds, getWatchedSet, hasWatchedRows } from '../trakt/service.js';
+import { getRecentWatchedIds, getWatchedSet } from '../trakt/service.js';
 
 // Per-person watch history, best source available:
 //   1. Trakt (user connected their account)
@@ -89,9 +89,8 @@ export async function recentlyWatchedForUser(
   userId: number,
   limit: number,
 ): Promise<{ mediaIds: number[]; method: WatchedMethod; stale: boolean }> {
-  const traktIds = getRecentWatchedIds(userId, limit);
-  if (traktIds)
-    return { mediaIds: traktIds, method: 'trakt', stale: !traktIds.length && hasWatchedRows(userId) };
+  const trakt = getRecentWatchedIds(userId, limit);
+  if (trakt) return { mediaIds: trakt.mediaIds, method: 'trakt', stale: trakt.undated };
 
   const token = ownPlexToken(userId);
   if (token) {

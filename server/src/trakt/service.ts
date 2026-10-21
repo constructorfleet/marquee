@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, sql } from 'drizzle-orm';
 import { decryptSecret, encryptSecret } from '../crypto.js';
 import { db } from '../db/index.js';
 import { media, users, userWatched } from '../db/schema.js';
@@ -98,26 +98,18 @@ export function getWatchedSet(userId: number): Set<number> | null {
   return new Set(rows.map((r) => r.mediaId));
 }
 
-// True when the user has watched rows at all. Distinguishes "rows exist but
-// none dated, so a re-sync helps" from an empty Trakt account, where it can't.
-export function hasWatchedRows(userId: number): boolean {
-  return !!db
-    .select({ mediaId: userWatched.mediaId })
-    .from(userWatched)
-    .where(eq(userWatched.userId, userId))
-    .limit(1)
-    .get();
-}
-
 // The user's most recently watched media ids, newest first, or null when they
-// haven't connected Trakt. Rows from before watched_at existed carry no time
-// and are left out rather than guessed at. Connected-but-undated stays an empty
-// array, not null: falling through would mix Plex recency with a Trakt watched
-// set. Callers tell the two apart via the `stale` flag in watchwith/service.
-export function getRecentWatchedIds(userId: number, limit: number): number[] | null {
+// haven't connected Trakt. Rows from before watched_at existed carry no time and
+// are left out rather than guessed at; connected-but-undated still returns (with
+// `undated`) rather than null, because falling through would mix Plex recency
+// with a Trakt watched set.
+export function getRecentWatchedIds(
+  userId: number,
+  limit: number,
+): { mediaIds: number[]; undated: boolean } | null {
   const user = db.select({ traktToken: users.traktToken }).from(users).where(eq(users.id, userId)).get();
   if (!user?.traktToken) return null;
-  return db
+  const mediaIds = db
     .select({ mediaId: userWatched.mediaId })
     .from(userWatched)
     .where(and(eq(userWatched.userId, userId), isNotNull(userWatched.watchedAt)))
@@ -125,4 +117,13 @@ export function getRecentWatchedIds(userId: number, limit: number): number[] | n
     .limit(limit)
     .all()
     .map((r) => r.mediaId);
+  if (mediaIds.length) return { mediaIds, undated: false };
+  // "History is here but predates watched_at" needs a refresh; "no history at
+  // all" does not. Only the empty case pays for the count.
+  const total = db
+    .select({ c: sql<number>`count(*)` })
+    .from(userWatched)
+    .where(eq(userWatched.userId, userId))
+    .get()!.c;
+  return { mediaIds, undated: total > 0 };
 }
