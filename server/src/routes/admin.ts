@@ -11,7 +11,7 @@ import { clearOidcCache, getOidcConfiguration, getOidcSettings } from '../auth/o
 import { startDiscordBot, testDiscord } from '../discord/bot.js';
 import { testJf } from '../jellyfin/client.js';
 import { getSections } from '../plex/client.js';
-import { clearSeerrUserCache, getSeerrConfig, testSeerr } from '../seerr/client.js';
+import { clearSeerrCaches, getSeerrConfig, testSeerr } from '../seerr/client.js';
 import { getPlexConfig, getSetting, setSetting } from '../settings.js';
 import { isSyncRunning, runLibrarySync } from '../sources/index.js';
 import { syncStatus } from '../sources/syncSchedule.js';
@@ -155,8 +155,8 @@ export async function adminRoutes(app: FastifyInstance) {
     if (parsed.data.seerrUrl) setSetting('seerr.url', parsed.data.seerrUrl);
     if (parsed.data.seerrApiKey) setSetting('seerr.apiKey', parsed.data.seerrApiKey.trim());
     if (parsed.data.seerrKind) setSetting('seerr.kind', parsed.data.seerrKind);
-    // A different request service (or key) has different users.
-    if (parsed.data.seerrUrl || parsed.data.seerrApiKey || parsed.data.seerrKind) clearSeerrUserCache();
+    // A different request service (or key) has different users and recommendations.
+    if (parsed.data.seerrUrl || parsed.data.seerrApiKey || parsed.data.seerrKind) clearSeerrCaches();
     if (parsed.data.allowRegistration !== undefined) {
       setSetting('auth.allowRegistration', String(parsed.data.allowRegistration));
     }

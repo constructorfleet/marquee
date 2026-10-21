@@ -16,6 +16,7 @@ export interface PlexItem {
   audienceRating?: number;
   contentRating?: string;
   viewCount?: number;
+  lastViewedAt?: number; // epoch seconds; absent until something is watched
   leafCount?: number; // shows: total episodes
   viewedLeafCount?: number; // shows: watched episodes
   Genre?: { tag: string }[];
