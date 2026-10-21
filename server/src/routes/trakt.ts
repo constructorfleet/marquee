@@ -1,20 +1,12 @@
 import type { FastifyInstance } from 'fastify';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { encryptSecret } from '../crypto.js';
 import { db } from '../db/index.js';
 import { users, userWatched } from '../db/schema.js';
 import { requireUser } from '../auth/plugin.js';
 import { createDeviceCode, getTraktApp, pollDeviceToken } from '../trakt/client.js';
-import { refreshUserWatched } from '../trakt/service.js';
-
-function watchedCount(userId: number): number {
-  return db
-    .select({ c: sql<number>`count(*)` })
-    .from(userWatched)
-    .where(eq(userWatched.userId, userId))
-    .get()!.c;
-}
+import { refreshUserWatched, watchedRowCount } from '../trakt/service.js';
 
 export async function traktRoutes(app: FastifyInstance) {
   app.get('/api/trakt/status', { preHandler: requireUser }, async (request) => {
@@ -22,7 +14,7 @@ export async function traktRoutes(app: FastifyInstance) {
     return {
       configured: !!getTraktApp(),
       connected: !!user?.traktToken,
-      watchedCount: watchedCount(request.user!.id),
+      watchedCount: watchedRowCount(request.user!.id),
     };
   });
 

@@ -120,10 +120,13 @@ export function getRecentWatchedIds(
   if (mediaIds.length) return { mediaIds, undated: false };
   // "History is here but predates watched_at" needs a refresh; "no history at
   // all" does not. Only the empty case pays for the count.
-  const total = db
+  return { mediaIds, undated: watchedRowCount(userId) > 0 };
+}
+
+export function watchedRowCount(userId: number): number {
+  return db
     .select({ c: sql<number>`count(*)` })
     .from(userWatched)
     .where(eq(userWatched.userId, userId))
     .get()!.c;
-  return { mediaIds, undated: total > 0 };
 }
