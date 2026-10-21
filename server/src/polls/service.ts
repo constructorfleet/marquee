@@ -54,17 +54,17 @@ export function closePoll(pollId: number) {
     } else {
       // Tie: the title that reached this vote count first wins — the one whose
       // deciding (most-recent) vote landed earliest. A late challenger that only
-      // ties at the buzzer can't steal it. Falls back to option order on an exact
-      // timestamp tie.
+      // ties at the buzzer can't steal it. Ranks by vote id, not createdAt: the
+      // column stores whole seconds, so a burst of votes looks simultaneous.
       const reachedAt = (optionId: number): number => {
         const last = db
-          .select({ ts: votes.createdAt })
+          .select({ id: votes.id })
           .from(votes)
           .where(and(eq(votes.pollId, pollId), eq(votes.optionId, optionId)))
-          .orderBy(desc(votes.createdAt))
+          .orderBy(desc(votes.id))
           .limit(1)
           .get();
-        return last?.ts?.getTime() ?? Number.POSITIVE_INFINITY;
+        return last?.id ?? Number.POSITIVE_INFINITY;
       };
       winnerOptionId = [...top].sort((a, b) => reachedAt(a.id) - reachedAt(b.id))[0]!.id;
     }

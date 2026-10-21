@@ -23,7 +23,20 @@ function lastRunMs(): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+// How late a daily occurrence may still be caught up; see schedules/service.ts.
+const CATCH_UP_MS = 2 * 60 * 60 * 1000;
+
+// Most recent timeOfDay in server-local time at or before `now`. Matching the
+// occurrence instead of the wall clock makes the sync idempotent across the
+// repeated hour when clocks go back, and lets a late tick still fire. A time
+// lost to the spring-forward gap lands on the next valid minute.
+function lastDailyOccurrence(now: Date, timeOfDay: string): Date {
+  const [h, m] = timeOfDay.split(':').map(Number);
+  const at = new Date(now);
+  at.setHours(h ?? 0, m ?? 0, 0, 0);
+  if (at.getTime() > now.getTime()) at.setDate(at.getDate() - 1);
+  return at;
+}
 
 // When the next automatic sync will run, or null when it's off. Intervals count
 // from the last sync of any kind — so syncing by hand pushes the next automatic
@@ -35,6 +48,8 @@ export function nextScheduledSync(now = new Date()): Date | null {
     return last === null ? now : new Date(Math.floor(last / 60_000) * 60_000 + intervalHours * 3_600_000);
   }
   if (mode === 'daily') {
+    // Not lastDailyOccurrence() + 1 day: on the day after a spring-forward the
+    // helper's gap resolution carries an extra hour into the answer.
     const [h, m] = timeOfDay.split(':').map(Number);
     const next = new Date(now);
     next.setHours(h!, m!, 0, 0);
@@ -48,9 +63,10 @@ function isSyncDue(now: Date): boolean {
   const { mode, timeOfDay } = getSyncSchedule();
   if (mode === 'interval') return nextScheduledSync(now)!.getTime() <= now.getTime();
   if (mode === 'daily') {
+    const occurrence = lastDailyOccurrence(now, timeOfDay).getTime();
     const last = lastRunMs();
-    // restart guard, and skips the run if the library was synced by hand moments ago
-    return hhmm(now) === timeOfDay && (last === null || now.getTime() - last > 90_000);
+    // A sync by hand after the occurrence serves it, so the scheduler stands down.
+    return (last === null || last < occurrence) && now.getTime() - occurrence <= CATCH_UP_MS;
   }
   return false;
 }

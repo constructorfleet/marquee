@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { and, eq, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -82,6 +81,8 @@ export async function listRoutes(app: FastifyInstance) {
       .object({ name: z.string().min(1).max(100).optional(), isShared: z.boolean().optional() })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
+    const { name, isShared } = parsed.data;
+    if (name === undefined && isShared === undefined) return reply.code(400).send({ error: 'Nothing to change' });
     db.update(lists).set(parsed.data).where(eq(lists.id, list.id)).run();
     return serializeList(listById(list.id)!, request.user!.id);
   });
@@ -119,18 +120,5 @@ export async function listRoutes(app: FastifyInstance) {
       .where(and(eq(listItems.listId, list.id), eq(listItems.mediaId, Number(params.mediaId))))
       .run();
     return reply.code(204).send();
-  });
-
-  app.post('/api/lists/:id/random', { preHandler: requireUser }, async (request, reply) => {
-    const list = listById(Number((request.params as { id: string }).id));
-    if (!list || !canView(list, request.user!)) return reply.code(404).send({ error: 'List not found' });
-    const items = db
-      .select({ media })
-      .from(listItems)
-      .innerJoin(media, eq(listItems.mediaId, media.id))
-      .where(eq(listItems.listId, list.id))
-      .all();
-    if (!items.length) return reply.code(404).send({ error: 'This list is empty' });
-    return serializeMedia(items[crypto.randomInt(items.length)]!.media);
   });
 }

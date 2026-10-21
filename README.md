@@ -80,13 +80,40 @@ services:
     volumes:
       - ./data:/data
     restart: unless-stopped
+    # Marquee runs as uid 1000 on a read-only root filesystem and keeps only the
+    # three capabilities its entrypoint needs to take /data and drop privileges.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
 ```
 
 ```bash
 docker compose up -d
 ```
 
+`cap_add` is not optional here: `cap_drop: [ALL]` on its own leaves the entrypoint unable to chown `/data` or drop to uid 1000, and the container won't start. To run with no capabilities at all, see the upgrade note below.
+
 Open the app, create the first admin account, then in **Admin → Media servers** add your Plex/Jellyfin/Emby details and hit **Sync all libraries now** — then turn on **Automatic sync** so new titles keep showing up on their own. All state lives in `./data` — back up that folder and you've backed up everything.
+
+### Upgrading: Marquee now runs as uid 1000
+
+Marquee used to run as root and now runs as uid 1000. **No action needed** — on first start after upgrading, the entrypoint takes ownership of `/data` itself. Files in `./data` change from root to uid 1000, and the instance secret is preserved byte for byte, so nobody is signed out and no stored secret becomes unreadable.
+
+Add the hardening keys from the compose block above while you're there. If you'd rather hand Marquee no capabilities at all, do the chown yourself once and run as the user directly:
+
+```bash
+chown -R 1000:1000 ./data
+```
+
+```yaml
+    user: "1000:1000"
+    cap_drop: [ALL]
+    # no cap_add — nothing left to chown or drop
+```
 
 ## Configuration
 
@@ -97,12 +124,37 @@ Open the app, create the first admin account, then in **Admin → Media servers*
 | `DATABASE_PATH` | `$DATA_DIR/marquee.db` | SQLite file location |
 | `SESSION_SECRET` | auto-generated, persisted in `$DATA_DIR` | Cookie signing + secrets-at-rest key |
 | `LOG_LEVEL` | `info` (prod) / `debug` (dev) | `trace`–`error` |
-| `TRUST_PROXY` | private networks | Which reverse proxies to trust for `X-Forwarded-*` (client IP for rate limits, https detection). The default trusts proxies on loopback/private addresses — a proxy on the same host, Docker network or LAN — and works unchanged when the server is exposed directly. Set a comma-separated IP/CIDR list to trust other proxies, e.g. add [Cloudflare's ranges](https://www.cloudflare.com/ips/) when it sits in front of your proxy. Hop counts are no longer supported. Avoid `true`: it trusts the whole header, letting clients spoof their IP. |
+| `TRUST_PROXY` | private networks | Which reverse proxies to trust for `X-Forwarded-*` (client IP for rate limits, https detection). The default trusts proxies on loopback/private addresses — a proxy on the same host, Docker network or LAN — and works unchanged when the server is exposed directly. **Pin it to your proxy if you can** — see [Pinning `TRUST_PROXY`](#pinning-trust_proxy). Hop counts are no longer supported. Avoid `true`: it trusts the whole header, letting any client spoof its IP. |
 | `ADMIN_IDLE_MINUTES` | `120` | Minutes of inactivity before an **admin** session is auto-logged-out |
 | `USER_IDLE_MINUTES` | `360` | Minutes of inactivity before a regular **user** session is auto-logged-out |
 | `TZ` | `UTC` (Docker) | Time zone for daily library syncs and scheduled randomizer picks, e.g. `America/New_York` |
 
 Everything else — media servers, Trakt, TMDb, Discord, request services, OIDC, the public app URL — is configured in the Admin UI, not env vars.
+
+> **Set the public app URL** (Admin → Settings) on any instance reachable from outside your LAN. Passkeys refuse to work without it, OIDC needs it for the redirect URI, and it's what tells Marquee to mark session cookies `Secure` even if your proxy forgets to send `X-Forwarded-Proto`.
+
+### Pinning `TRUST_PROXY`
+
+Marquee works out the client's IP address from `X-Forwarded-For`, trusting that header only from proxies in `TRUST_PROXY`. The default (`loopback,linklocal,uniquelocal`) trusts any proxy on a loopback or private address, which is where a self-hosted Traefik, nginx, Caddy or SWAG lives — so it works out of the box, including when Marquee is exposed directly with no proxy at all.
+
+The trade-off: trusting a whole address *class* rather than one address means a client reaching Marquee through such a proxy can put whatever it likes in `X-Forwarded-For` and have that become its apparent IP. Per-IP rate limits and the per-network guest-vote cap on public polls can then be sidestepped by rotating the header. (Login brute force and ballot stuffing have defences that don't use the IP at all — see [Security](#security) — so this is a weakened control, not an open door.)
+
+Pin it to the address your proxy actually connects from and that goes away. Marquee logs a warning at startup whenever the effective setting is one of the loose ones.
+
+```yaml
+# Traefik and Marquee on the same Docker network: trust that subnet only.
+# `docker network inspect <network> --format '{{(index .IPAM.Config 0).Subnet}}'`
+environment:
+  - TRUST_PROXY=172.18.0.0/16
+
+# Proxy on the same host, talking to Marquee over localhost:
+  - TRUST_PROXY=loopback
+
+# Cloudflare in front of your own proxy: list both, proxy first.
+  - TRUST_PROXY=172.18.0.0/16,173.245.48.0/20,103.21.244.0/22   # …and the rest of https://www.cloudflare.com/ips/
+```
+
+Pick the narrowest thing that still works: a single address (`10.0.0.5`) beats a subnet, and a subnet beats the default. If sign-ins start failing after a change, check that Marquee logs a plausible client IP rather than your proxy's — with nothing trusted, everyone shares the proxy's address and one person's failed logins rate-limit the household.
 
 ### Integrations (all optional)
 
@@ -188,12 +240,18 @@ curl -H "Authorization: Bearer $KEY" "https://marquee.example.com/api/widget/pol
 
 - Integration secrets and user OAuth tokens are **encrypted at rest** (AES-256-GCM) with a key derived from the instance secret — a copy of the database alone exposes nothing
 - The widget API key is encrypted at rest too, sent only as a header, and compared in constant time
-- Passwords hashed with scrypt; sessions in signed, HTTP-only, SameSite cookies (Secure over TLS)
+- Passwords hashed with scrypt at OWASP-recommended cost; the cost is recorded in each hash, so it can be raised later and old hashes upgrade themselves on the next sign-in
+- Sessions in signed, HTTP-only, SameSite cookies, marked `Secure` from the configured app URL rather than a header a proxy might not send
+- Failed password sign-ins back off **per account**, not per IP address, so the rate limit can't be sidestepped by spoofing `X-Forwarded-For`. The wait is capped and forgotten after an hour, and it never applies to Plex, SSO or passkey sign-in — there's always another way in
 - Rate limiting on all credential endpoints; security headers via Helmet
 - Media-server tokens/keys never reach the browser — posters proxy through the server
-- Registration can be disabled for invite-only instances
+- **Registration is closed by default** — turn it on under Admin → Access for an open instance. Closed means Jellyfin/Emby sign-ins won't create accounts either, so pointing Marquee at those servers for library sync doesn't quietly give everyone on them a way in
+- Public poll links cap guest votes per network *and* per poll, so a shared link can't be stuffed
+- The container runs as a non-root user with no capabilities beyond the three its startup needs, on a read-only root filesystem, with `no-new-privileges`
 
-**Run it behind HTTPS** (Caddy, Traefik, nginx, or a Cloudflare tunnel). Passkeys require it (or localhost), and it's the right call for anything public-facing. Marquee sits happily behind a reverse proxy on the same host, Docker network or LAN (see `TRUST_PROXY`).
+**Run it behind HTTPS** (Caddy, Traefik, nginx, or a Cloudflare tunnel). Passkeys require it (or localhost), and it's the right call for anything public-facing. Marquee sits happily behind a reverse proxy on the same host, Docker network or LAN (see [Pinning `TRUST_PROXY`](#pinning-trust_proxy)).
+
+**Signing in with Plex** uses plex.tv's PIN flow, which — like Overseerr, Jellyseerr and every other device-code flow ([RFC 8628 §5.1](https://www.rfc-editor.org/rfc/rfc8628#section-5.1)) — can't distinguish an approval you meant from one you were talked into. Marquee shows the four-character code next to the Plex button: **only approve a Plex sign-in whose code matches the one Marquee just showed you.** If a "sign in to Marquee" link arrives from someone else, close it and start again from Marquee itself.
 
 ## Database health
 
@@ -202,14 +260,16 @@ Everything lives in one SQLite file, `marquee.db` in the data folder. Marquee ru
 If the check reports problems:
 
 1. Stop the container and back up the data folder (`marquee.db` plus any `-wal`/`-shm` files beside it).
-2. If every problem mentions an index, the data itself is intact. Start the container again and rebuild the indexes from its terminal:
+2. If every problem mentions an index, the data itself is intact. Start the container again and rebuild the indexes — **note the `-u 1000`**:
    ```bash
-   cd /app && node -e "const db=require('better-sqlite3')('/data/marquee.db');db.exec('REINDEX');console.log(db.pragma('integrity_check',{simple:true}))"
+   docker exec -u 1000 -w /app marquee node -e "const db=require('better-sqlite3')('/data/marquee.db');db.exec('REINDEX');console.log(db.pragma('integrity_check',{simple:true}))"
    ```
    It prints `ok` once fixed. A `UNIQUE constraint failed` error means duplicate accounts slipped in while the index was damaged and have to be merged first — open an issue.
+
+   Leave out `-u 1000` and SQLite answers `SQLITE_READONLY`, which is easy to misread as more database damage. `docker exec` lands as root because the image's default user stays root for the entrypoint's chown, but root no longer owns `/data` and no longer holds `CAP_DAC_OVERRIDE` to override that. uid 1000 is the user Marquee itself runs as.
 3. Otherwise, restore the data folder from a backup or NAS snapshot.
 
-Keep the data folder on the host's own disks — SQLite isn't safe on network shares (SMB/NFS) — and never point two Marquee instances at the same folder.
+Keep the data folder on the host's own disks — SQLite isn't safe on network shares (SMB/NFS), and uid 1000 has to be mappable to own the files — and never point two Marquee instances at the same folder.
 
 ## Development
 

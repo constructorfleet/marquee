@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, sql } from 'drizzle-orm';
 import { decryptSecret, encryptSecret } from '../crypto.js';
 import { db } from '../db/index.js';
 import { media, users, userWatched } from '../db/schema.js';
@@ -82,8 +82,8 @@ export async function refreshUserWatched(userId: number): Promise<number> {
   return matched.length;
 }
 
-// The user's personal watched set, or null when they haven't connected Trakt
-// (callers then fall back to the Plex-account-level watched flag).
+// The user's personal watched set, or null when Trakt has nothing to say —
+// callers then fall through to the next source.
 export function getWatchedSet(userId: number): Set<number> | null {
   const user = db.select({ traktToken: users.traktToken }).from(users).where(eq(users.id, userId)).get();
   if (!user?.traktToken) return null;
@@ -92,16 +92,24 @@ export function getWatchedSet(userId: number): Set<number> | null {
     .from(userWatched)
     .where(eq(userWatched.userId, userId))
     .all();
+  // A token whose initial sync failed must not outrank the user's own Plex
+  // history by claiming, authoritatively, that they have watched nothing.
+  if (!rows.length) return null;
   return new Set(rows.map((r) => r.mediaId));
 }
 
 // The user's most recently watched media ids, newest first, or null when they
-// haven't connected Trakt. Rows from before watched_at existed carry no time
-// and are left out rather than guessed at.
-export function getRecentWatchedIds(userId: number, limit: number): number[] | null {
+// haven't connected Trakt. Rows from before watched_at existed carry no time and
+// are left out rather than guessed at; connected-but-undated still returns (with
+// `undated`) rather than null, because falling through would mix Plex recency
+// with a Trakt watched set.
+export function getRecentWatchedIds(
+  userId: number,
+  limit: number,
+): { mediaIds: number[]; undated: boolean } | null {
   const user = db.select({ traktToken: users.traktToken }).from(users).where(eq(users.id, userId)).get();
   if (!user?.traktToken) return null;
-  return db
+  const mediaIds = db
     .select({ mediaId: userWatched.mediaId })
     .from(userWatched)
     .where(and(eq(userWatched.userId, userId), isNotNull(userWatched.watchedAt)))
@@ -109,4 +117,16 @@ export function getRecentWatchedIds(userId: number, limit: number): number[] | n
     .limit(limit)
     .all()
     .map((r) => r.mediaId);
+  if (mediaIds.length) return { mediaIds, undated: false };
+  // "History is here but predates watched_at" needs a refresh; "no history at
+  // all" does not. Only the empty case pays for the count.
+  return { mediaIds, undated: watchedRowCount(userId) > 0 };
+}
+
+export function watchedRowCount(userId: number): number {
+  return db
+    .select({ c: sql<number>`count(*)` })
+    .from(userWatched)
+    .where(eq(userWatched.userId, userId))
+    .get()!.c;
 }

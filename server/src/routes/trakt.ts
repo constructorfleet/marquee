@@ -1,20 +1,12 @@
 import type { FastifyInstance } from 'fastify';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { encryptSecret } from '../crypto.js';
 import { db } from '../db/index.js';
 import { users, userWatched } from '../db/schema.js';
 import { requireUser } from '../auth/plugin.js';
 import { createDeviceCode, getTraktApp, pollDeviceToken } from '../trakt/client.js';
-import { refreshUserWatched } from '../trakt/service.js';
-
-function watchedCount(userId: number): number {
-  return db
-    .select({ c: sql<number>`count(*)` })
-    .from(userWatched)
-    .where(eq(userWatched.userId, userId))
-    .get()!.c;
-}
+import { refreshUserWatched, watchedRowCount } from '../trakt/service.js';
 
 export async function traktRoutes(app: FastifyInstance) {
   app.get('/api/trakt/status', { preHandler: requireUser }, async (request) => {
@@ -22,7 +14,7 @@ export async function traktRoutes(app: FastifyInstance) {
     return {
       configured: !!getTraktApp(),
       connected: !!user?.traktToken,
-      watchedCount: watchedCount(request.user!.id),
+      watchedCount: watchedRowCount(request.user!.id),
     };
   });
 
@@ -63,14 +55,17 @@ export async function traktRoutes(app: FastifyInstance) {
       .where(eq(users.id, request.user!.id))
       .run();
 
-    // Pull history right away; a failure here shouldn't undo the connection.
+    // Pull history right away; a failure here shouldn't undo the connection, but
+    // it must be reported — watchedCount 0 is otherwise read as "watched nothing".
     let count = 0;
+    let syncError: string | null = null;
     try {
       count = await refreshUserWatched(request.user!.id);
     } catch (err) {
       request.log.warn(err, 'initial Trakt watched sync failed');
+      syncError = err instanceof Error ? err.message : 'Could not pull your Trakt history';
     }
-    return { connected: true, watchedCount: count };
+    return { connected: true, watchedCount: count, syncError };
   });
 
   app.post('/api/trakt/refresh', { preHandler: requireUser }, async (request, reply) => {

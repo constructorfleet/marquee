@@ -365,6 +365,7 @@ export interface RandomFilters {
 export type SimilarToRecentStatus =
   | 'applied'
   | 'no-history' // nothing recent to seed from: no dated watches, or none with a TMDb id
+  | 'history-stale' // Trakt is connected but none of its watches carry a date — refresh it
   | 'not-configured' // no request service set up
   | 'unsupported' // Ombi has no recommendations API
   | 'unavailable' // the request service errored or timed out

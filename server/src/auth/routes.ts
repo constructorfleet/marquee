@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { eq, sql } from 'drizzle-orm';
 import * as oidc from 'openid-client';
 import { z } from 'zod';
@@ -12,8 +12,9 @@ import { authenticateJf, getJfConfig } from '../jellyfin/client.js';
 import { logger } from '../logger.js';
 import { buildAuthUrl, checkLoginPin, createLoginPin, getPlexAccount, hasServerAccess } from '../plex/plextv.js';
 import { getPlexConfig, getSetting } from '../settings.js';
-import { hashPassword, verifyPassword } from './passwords.js';
-import { createSession, destroySession } from './plugin.js';
+import { hashPassword, needsRehash, verifyPassword } from './passwords.js';
+import { cookieSecure, createSession, destroySession, publicBaseUrl, requireUser, revokeOtherSessions } from './plugin.js';
+import { recordFailure, recordSuccess, retryAfterSeconds, type ThrottleProvider } from './throttle.js';
 import { uniqueUsername, usernameIs, usernameTaken } from './usernames.js';
 
 const credentialsSchema = z.object({
@@ -25,19 +26,53 @@ const credentialsSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters').max(200),
 });
 
-// Brute-force protection on credential endpoints.
+// Per-IP brute-force protection on credential endpoints. Only a speed bump
+// behind a reverse proxy, where the client can pick its own request.ip (see
+// config.ts) — the per-account backoff in throttle.js is the real control.
 const AUTH_RATE = { rateLimit: { max: 10, timeWindow: '1 minute' } };
 // The Plex login page polls every 3s (20/min); leave room for a few people on one connection.
 const PLEX_POLL_RATE = { rateLimit: { max: 120, timeWindow: '1 minute' } };
 const PLEX_PIN_COOKIE = 'marquee_plex_pin';
+// The login page gives up polling after 5 minutes; a PIN binding that outlives
+// the attempt is just a longer window for a phished approval to be collected.
+const PLEX_PIN_COOKIE_MAX_AGE = 5 * 60;
 
 // A throwaway hash so login spends the same scrypt time whether or not the
 // username exists — closes the timing side channel that would otherwise let an
-// attacker enumerate valid local accounts.
+// attacker enumerate valid local accounts. Written at the current cost, so a
+// failed login against a legacy (cheaper) hash has to be padded to match it.
 const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
 
 function userCount(): number {
   return db.select({ c: sql<number>`count(*)` }).from(users).get()!.c;
+}
+
+// Closed unless an admin opened it. A self-registered account can immediately
+// read who is watching what, the member roster and the whole catalogue, so an
+// exposed instance must not hand that out by default; first-run setup creates
+// the admin without needing this. Gates new Jellyfin/Emby accounts too — see
+// the find-or-create branch below.
+export function registrationOpen(): boolean {
+  return getSetting('auth.allowRegistration') === 'true';
+}
+
+// Refuse early when this account is in backoff. The counter covers usernames
+// that don't exist too, so the response is identical either way and still
+// can't be used to enumerate accounts.
+function throttled(provider: ThrottleProvider, username: string, reply: FastifyReply): boolean {
+  const retryAfter = retryAfterSeconds(provider, username);
+  if (retryAfter === 0) return false;
+  reply
+    .code(429)
+    .header('retry-after', String(retryAfter))
+    .send({ error: `Too many failed sign-in attempts — try again in ${describeWait(retryAfter)}` });
+  return true;
+}
+
+function describeWait(seconds: number): string {
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? '' : 's'}`;
+  const minutes = Math.ceil(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
 export async function authRoutes(app: FastifyInstance) {
@@ -56,7 +91,7 @@ export async function authRoutes(app: FastifyInstance) {
         emby: !!getJfConfig('emby'),
         oidc: !!getOidcSettings(),
         oidcLabel: getOidcSettings()?.label ?? null,
-        allowRegistration: getSetting('auth.allowRegistration') !== 'false',
+        allowRegistration: registrationOpen(),
       },
     };
   });
@@ -81,7 +116,7 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.post('/api/auth/register', { config: AUTH_RATE }, async (request, reply) => {
     if (userCount() === 0) return reply.code(400).send({ error: 'Use setup to create the first admin account' });
-    if (getSetting('auth.allowRegistration') === 'false') {
+    if (!registrationOpen()) {
       return reply.code(403).send({ error: 'Registration is disabled on this server — ask your admin for an account' });
     }
     const parsed = credentialsSchema.safeParse(request.body);
@@ -99,16 +134,57 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/api/auth/login', { config: AUTH_RATE }, async (request, reply) => {
     const parsed = z.object({ username: z.string(), password: z.string() }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
+    if (throttled('local', parsed.data.username, reply)) return reply;
     const user = db.select().from(users).where(usernameIs(parsed.data.username)).get();
     // Always verify against a hash (a dummy one when the account is missing or
     // has no local password) so response time doesn't reveal which usernames exist.
     const passwordOk = verifyPassword(parsed.data.password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
     if (!user?.passwordHash || !passwordOk) {
+      // A legacy hash is cheap enough to answer noticeably sooner than the
+      // dummy, which would give the account away; spend the difference.
+      if (user?.passwordHash && needsRehash(user.passwordHash)) {
+        verifyPassword(parsed.data.password, DUMMY_PASSWORD_HASH);
+      }
+      recordFailure('local', parsed.data.username);
       logger.warn({ username: parsed.data.username, ip: request.ip }, 'failed login attempt');
       return reply.code(401).send({ error: 'Invalid username or password' });
     }
+    recordSuccess('local', parsed.data.username);
+    // The only moment the plaintext exists: move an old-cost hash up to the
+    // current one. Failing here must not fail the sign-in.
+    if (needsRehash(user.passwordHash)) {
+      try {
+        db.update(users).set({ passwordHash: hashPassword(parsed.data.password) }).where(eq(users.id, user.id)).run();
+      } catch (err) {
+        logger.warn({ userId: user.id, err }, 'could not upgrade password hash cost');
+      }
+    }
     await createSession(reply, user.id);
     return { user: { id: user.id, username: user.username, isAdmin: user.isAdmin } };
+  });
+
+  // Self-service password change. Needs the current password, and signs every
+  // other browser out so a stolen session can't outlive the rotation.
+  app.post('/api/auth/password', { config: AUTH_RATE, preHandler: requireUser }, async (request, reply) => {
+    const parsed = z
+      .object({ currentPassword: z.string(), newPassword: credentialsSchema.shape.password })
+      .safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
+    const user = db.select().from(users).where(eq(users.id, request.user!.id)).get();
+    if (!user?.passwordHash) {
+      return reply.code(409).send({ error: 'This account signs in without a password — ask your admin to set one' });
+    }
+    if (throttled('local', user.username, reply)) return reply;
+    if (!verifyPassword(parsed.data.currentPassword, user.passwordHash)) {
+      recordFailure('local', user.username);
+      logger.warn({ userId: user.id, ip: request.ip }, 'failed password change attempt');
+      return reply.code(401).send({ error: 'That current password is not right' });
+    }
+    recordSuccess('local', user.username);
+    db.update(users).set({ passwordHash: hashPassword(parsed.data.newPassword) }).where(eq(users.id, user.id)).run();
+    const revoked = revokeOtherSessions(request, user.id);
+    logger.info({ userId: user.id, revoked }, 'password changed');
+    return { ok: true, revokedSessions: revoked };
   });
 
   app.post('/api/auth/logout', async (request, reply) => {
@@ -117,7 +193,9 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // OIDC step 1: stash PKCE/state in a short-lived signed cookie and redirect to the provider.
-  app.get('/api/auth/oidc/start', async (_request, reply) => {
+  // Rate-limited like the credential endpoints: each call makes the server fetch
+  // the provider's discovery document.
+  app.get('/api/auth/oidc/start', { config: AUTH_RATE }, async (_request, reply) => {
     const fail = (message: string) => reply.redirect(`/login?oidcError=${encodeURIComponent(message)}`);
     if (userCount() === 0) return fail('Complete first-run setup first');
     try {
@@ -139,6 +217,7 @@ export async function authRoutes(app: FastifyInstance) {
         httpOnly: true,
         sameSite: 'lax',
         signed: true,
+        secure: cookieSecure(reply.request),
         maxAge: 600,
       });
       return reply.redirect(authUrl.href);
@@ -148,7 +227,7 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // OIDC step 2: the provider redirects back here with a code; exchange and sign in.
-  app.get('/api/auth/oidc/callback', async (request, reply) => {
+  app.get('/api/auth/oidc/callback', { config: AUTH_RATE }, async (request, reply) => {
     const fail = (message: string) => reply.redirect(`/login?oidcError=${encodeURIComponent(message)}`);
     try {
       const raw = request.cookies['marquee_oidc'];
@@ -194,13 +273,17 @@ export async function authRoutes(app: FastifyInstance) {
 
   // Username/password sign-in against the configured Jellyfin or Emby server.
   for (const kind of ['jellyfin', 'emby'] as const) {
+    const label = kind === 'jellyfin' ? 'Jellyfin' : 'Emby';
     app.post(`/api/auth/${kind}`, { config: AUTH_RATE }, async (request, reply) => {
       if (userCount() === 0) return reply.code(400).send({ error: 'Complete first-run setup first' });
       const parsed = z.object({ username: z.string().min(1), password: z.string() }).safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
       if (!getJfConfig(kind)) {
-        return reply.code(503).send({ error: `${kind === 'jellyfin' ? 'Jellyfin' : 'Emby'} sign-in is not enabled on this server` });
+        return reply.code(503).send({ error: `${label} sign-in is not enabled on this server` });
       }
+      // This endpoint is also a password oracle against the media server, so it
+      // gets the same per-account backoff as local sign-in.
+      if (throttled(kind, parsed.data.username, reply)) return reply;
 
       let account;
       try {
@@ -208,14 +291,25 @@ export async function authRoutes(app: FastifyInstance) {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Sign-in failed';
         if (message === 'INVALID_CREDENTIALS') {
+          recordFailure(kind, parsed.data.username);
           return reply.code(401).send({ error: 'Invalid username or password' });
         }
         return reply.code(502).send({ error: message });
       }
+      recordSuccess(kind, parsed.data.username);
 
       const idColumn = kind === 'jellyfin' ? users.jellyfinId : users.embyId;
       let user = db.select().from(users).where(eq(idColumn, account.id)).get();
       if (!user) {
+        // Configuring a Jellyfin/Emby server is also how library sync is set up,
+        // so creating accounts here unasked would silently give everyone on that
+        // server a way in. Minting one is registration, and obeys the setting.
+        if (!registrationOpen()) {
+          logger.warn({ provider: kind, account: account.name }, 'rejected new federated account: registration closed');
+          return reply
+            .code(403)
+            .send({ error: `This server doesn't create accounts from ${label} sign-ins — ask your admin for an account` });
+        }
         user = db
           .insert(users)
           .values({
@@ -225,6 +319,7 @@ export async function authRoutes(app: FastifyInstance) {
           })
           .returning()
           .get();
+        logger.info({ userId: user.id, username: user.username, provider: kind }, 'new user created via federated sign-in');
       }
       await createSession(reply, user.id);
       return { user: { id: user.id, username: user.username, isAdmin: user.isAdmin } };
@@ -238,16 +333,23 @@ export async function authRoutes(app: FastifyInstance) {
     if (userCount() === 0) return reply.code(400).send({ error: 'Complete first-run setup before signing in with Plex' });
     try {
       const pin = await createLoginPin();
-      const origin = getSetting('app.url')?.replace(/\/+$/, '') ?? `${request.protocol}://${request.headers.host}`;
+      // Only ask plex.tv to redirect back if we have an admin-configured URL to
+      // redirect to. A Host-header-derived one would send the popup wherever the
+      // request claimed to be for; without it, plex.tv just shows its own
+      // confirmation page and the opener tab's polling finishes the sign-in.
+      const baseUrl = publicBaseUrl();
       reply.setCookie(PLEX_PIN_COOKIE, String(pin.id), {
         path: '/api/auth/plex',
         httpOnly: true,
         sameSite: 'lax',
         signed: true,
-        secure: request.protocol === 'https',
-        maxAge: 10 * 60, // the login page gives up after 5 minutes
+        secure: cookieSecure(request),
+        maxAge: PLEX_PIN_COOKIE_MAX_AGE,
       });
-      return { pinId: pin.id, code: pin.code, authUrl: buildAuthUrl(pin.code, `${origin}/login?plexDone=1`) };
+      // `code` goes to the client so it can be shown next to the Plex prompt:
+      // a device-code flow can't tell an approval the user meant from one they
+      // were phished into, and matching the code by eye is the only check left.
+      return { pinId: pin.id, code: pin.code, authUrl: buildAuthUrl(pin.code, baseUrl ? `${baseUrl}/login?plexDone=1` : undefined) };
     } catch (err) {
       return reply.code(502).send({ error: err instanceof Error ? err.message : 'Could not reach plex.tv' });
     }
