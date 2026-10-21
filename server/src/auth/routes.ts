@@ -14,6 +14,7 @@ import { buildAuthUrl, checkLoginPin, createLoginPin, getPlexAccount, hasServerA
 import { getPlexConfig, getSetting } from '../settings.js';
 import { hashPassword, verifyPassword } from './passwords.js';
 import { createSession, destroySession } from './plugin.js';
+import { uniqueUsername, usernameIs, usernameTaken } from './usernames.js';
 
 const credentialsSchema = z.object({
   username: z
@@ -85,8 +86,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const parsed = credentialsSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
-    const existing = db.select({ id: users.id }).from(users).where(eq(users.username, parsed.data.username)).get();
-    if (existing) return reply.code(409).send({ error: 'That username is already taken' });
+    if (usernameTaken(parsed.data.username)) return reply.code(409).send({ error: 'That username is already taken' });
     const user = db
       .insert(users)
       .values({ username: parsed.data.username, passwordHash: hashPassword(parsed.data.password) })
@@ -99,7 +99,7 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/api/auth/login', { config: AUTH_RATE }, async (request, reply) => {
     const parsed = z.object({ username: z.string(), password: z.string() }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
-    const user = db.select().from(users).where(eq(users.username, parsed.data.username)).get();
+    const user = db.select().from(users).where(usernameIs(parsed.data.username)).get();
     // Always verify against a hash (a dummy one when the account is missing or
     // has no local password) so response time doesn't reveal which usernames exist.
     const passwordOk = verifyPassword(parsed.data.password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
@@ -179,12 +179,11 @@ export async function authRoutes(app: FastifyInstance) {
           (typeof claims.name === 'string' && claims.name) ||
           email?.split('@')[0] ||
           `user-${claims.sub.slice(0, 8)}`;
-        let username = preferred;
-        let suffix = 1;
-        while (db.select({ id: users.id }).from(users).where(eq(users.username, username)).get()) {
-          username = `${preferred}-${++suffix}`;
-        }
-        user = db.insert(users).values({ username, passwordHash: null, oidcSub: claims.sub }).returning().get();
+        user = db
+          .insert(users)
+          .values({ username: uniqueUsername(preferred), passwordHash: null, oidcSub: claims.sub })
+          .returning()
+          .get();
       }
       await createSession(reply, user.id);
       return reply.redirect('/');
@@ -217,15 +216,10 @@ export async function authRoutes(app: FastifyInstance) {
       const idColumn = kind === 'jellyfin' ? users.jellyfinId : users.embyId;
       let user = db.select().from(users).where(eq(idColumn, account.id)).get();
       if (!user) {
-        let username = account.name;
-        let suffix = 1;
-        while (db.select({ id: users.id }).from(users).where(eq(users.username, username)).get()) {
-          username = `${account.name}-${++suffix}`;
-        }
         user = db
           .insert(users)
           .values({
-            username,
+            username: uniqueUsername(account.name),
             passwordHash: null,
             ...(kind === 'jellyfin' ? { jellyfinId: account.id } : { embyId: account.id }),
           })
@@ -322,11 +316,7 @@ function upsertPlexUser(
     return existing;
   }
   // Plex usernames may collide with existing local accounts — pick a free variant.
-  let username = account.username;
-  let suffix = 1;
-  while (db.select({ id: users.id }).from(users).where(eq(users.username, username)).get()) {
-    username = `${account.username}-${++suffix}`;
-  }
+  const username = uniqueUsername(account.username);
   const created = db
     .insert(users)
     .values({ username, passwordHash: null, plexId, plexToken: storedToken, avatar: account.thumb })

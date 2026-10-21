@@ -1,24 +1,31 @@
+import { sql } from 'drizzle-orm';
 import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
-export const users = sqliteTable('users', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  username: text('username').notNull().unique(),
-  passwordHash: text('password_hash'), // null for Plex-authenticated accounts
-  plexId: text('plex_id').unique(), // plex.tv account id, set for Plex-authenticated accounts
-  plexToken: text('plex_token'), // that account's token, kept for future Watch With / watchlist features
-  discordId: text('discord_id').unique(), // set for shadow accounts created by Discord button votes
-  guestId: text('guest_id').unique(), // set for guest accounts created by votes on a public poll link
-  jellyfinId: text('jellyfin_id').unique(), // set for Jellyfin-authenticated accounts
-  embyId: text('emby_id').unique(), // set for Emby-authenticated accounts
-  oidcSub: text('oidc_sub').unique(), // set for OIDC-authenticated accounts (subject claim)
-  traktToken: text('trakt_token'), // Trakt OAuth access token, set when the user connects Trakt
-  traktRefresh: text('trakt_refresh'),
-  avatar: text('avatar'),
-  isAdmin: integer('is_admin', { mode: 'boolean' }).notNull().default(false),
-  createdAt: integer('created_at', { mode: 'timestamp' })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
+export const users = sqliteTable(
+  'users',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    username: text('username').notNull(), // unique regardless of case (index below)
+    passwordHash: text('password_hash'), // null for Plex-authenticated accounts
+    plexId: text('plex_id').unique(), // plex.tv account id, set for Plex-authenticated accounts
+    plexToken: text('plex_token'), // that account's token, kept for future Watch With / watchlist features
+    discordId: text('discord_id').unique(), // set for shadow accounts created by Discord button votes
+    guestId: text('guest_id').unique(), // set for guest accounts created by votes on a public poll link
+    jellyfinId: text('jellyfin_id').unique(), // set for Jellyfin-authenticated accounts
+    embyId: text('emby_id').unique(), // set for Emby-authenticated accounts
+    oidcSub: text('oidc_sub').unique(), // set for OIDC-authenticated accounts (subject claim)
+    traktToken: text('trakt_token'), // Trakt OAuth access token, set when the user connects Trakt
+    traktRefresh: text('trakt_refresh'),
+    avatar: text('avatar'),
+    isAdmin: integer('is_admin', { mode: 'boolean' }).notNull().default(false),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  // "Michael" and "michael" are one account. Lookups compare lower(username)
+  // (see auth/usernames.ts) so they can use this index.
+  (t) => [uniqueIndex('users_username_lower_unique').on(sql`lower(${t.username})`)],
+);
 
 // WebAuthn credentials ("passkeys") registered by users.
 export const passkeys = sqliteTable('passkeys', {

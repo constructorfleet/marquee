@@ -10,6 +10,7 @@ import {
   type Interaction,
 } from 'discord.js';
 import { and, eq, sql } from 'drizzle-orm';
+import { uniqueUsername } from '../auth/usernames.js';
 import { db } from '../db/index.js';
 import { pollOptions, polls, users, votes } from '../db/schema.js';
 import { emitPollUpdate } from '../events.js';
@@ -269,12 +270,11 @@ async function handleInteraction(interaction: Interaction): Promise<void> {
   const discordId = interaction.user.id;
   let user = db.select().from(users).where(eq(users.discordId, discordId)).get();
   if (!user) {
-    let username = interaction.user.username || `discord-${discordId}`;
-    let suffix = 1;
-    while (db.select({ id: users.id }).from(users).where(eq(users.username, username)).get()) {
-      username = `${interaction.user.username}-${++suffix}`;
-    }
-    user = db.insert(users).values({ username, passwordHash: null, discordId }).returning().get();
+    user = db
+      .insert(users)
+      .values({ username: uniqueUsername(interaction.user.username, `discord-${discordId}`), passwordHash: null, discordId })
+      .returning()
+      .get();
   }
 
   try {

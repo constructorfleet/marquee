@@ -8,7 +8,7 @@ import { requireAdmin } from '../auth/plugin.js';
 import { updatePollMessage } from '../discord/bot.js';
 import { emitPollUpdate, streamPollEvents } from '../events.js';
 import { serializePollDetail, serializePublicPoll } from '../polls/service.js';
-import { uniqueUsername } from './adminUsers.js';
+import { uniqueUsername } from '../auth/usernames.js';
 import { streamPoster } from './media.js';
 
 // Public poll links: an admin can share a poll at /vote/<publicToken> so people

@@ -113,6 +113,13 @@
       "when": 1792583139201,
       "tag": "0015_stale_senator_kelly",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1792588814764,
+      "tag": "0016_daily_butterfly",
+      "breakpoints": true
     }
   ]
 }

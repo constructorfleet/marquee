@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
-import { asc, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import { polls, sessions, users } from '../db/schema.js';
 import { requireAdmin } from '../auth/plugin.js';
 import { runIntegrityCheck } from '../db/health.js';
 import { hashPassword } from '../auth/passwords.js';
+import { uniqueUsername, usernameTaken } from '../auth/usernames.js';
 import { getFriends, getHomeUsers } from '../plex/plextv.js';
 import { getPlexConfig } from '../settings.js';
 
@@ -25,18 +26,9 @@ function serializeUser(u: typeof users.$inferSelect) {
   };
 }
 
-export function uniqueUsername(preferred: string): string {
-  let username = preferred;
-  let suffix = 1;
-  while (db.select({ id: users.id }).from(users).where(eq(users.username, username)).get()) {
-    username = `${preferred}-${++suffix}`;
-  }
-  return username;
-}
-
 export async function adminUserRoutes(app: FastifyInstance) {
   app.get('/api/admin/users', { preHandler: requireAdmin }, async () => {
-    return db.select().from(users).orderBy(asc(users.username)).all().map(serializeUser);
+    return db.select().from(users).orderBy(sql`lower(${users.username})`).all().map(serializeUser);
   });
 
   // Manually create a local account (username + password).
@@ -53,9 +45,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
       })
       .safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
-    if (db.select({ id: users.id }).from(users).where(eq(users.username, parsed.data.username)).get()) {
-      return reply.code(409).send({ error: 'That username is already taken' });
-    }
+    if (usernameTaken(parsed.data.username)) return reply.code(409).send({ error: 'That username is already taken' });
     const user = db
       .insert(users)
       .values({
