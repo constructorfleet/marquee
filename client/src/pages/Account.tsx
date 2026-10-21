@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { startRegistration } from '@simplewebauthn/browser';
 import type { PasskeyInfo } from '@marquee/shared';
@@ -41,6 +41,37 @@ export function Account() {
     mutationFn: (id: number) => api(`/api/passkeys/${id}`, { method: 'DELETE' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['passkeys'] }),
   });
+
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+
+  const changePassword = useMutation({
+    mutationFn: () =>
+      api<{ revokedSessions: number }>('/api/auth/password', { body: { currentPassword, newPassword } }),
+    onSuccess: (res) => {
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordMessage(
+        res.revokedSessions > 0
+          ? `✓ Password changed — signed out of ${res.revokedSessions} other ${res.revokedSessions === 1 ? 'browser' : 'browsers'}`
+          : '✓ Password changed',
+      );
+    },
+    onError: (err) => setPasswordMessage(`✗ ${err instanceof ApiError ? err.message : 'Could not change your password'}`),
+  });
+
+  const submitPassword = (e: FormEvent) => {
+    e.preventDefault();
+    setPasswordMessage(null);
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage('✗ The new passwords do not match');
+      return;
+    }
+    changePassword.mutate();
+  };
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
@@ -98,6 +129,51 @@ export function Account() {
           </button>
         </div>
         {message && <p className="text-sm text-stone-300">{message}</p>}
+      </section>
+
+      <section className="card space-y-4 p-5">
+        <div>
+          <h2 className="text-xs font-semibold tracking-widest text-neon-500 uppercase">Password</h2>
+          <p className="mt-1 text-sm text-stone-400">
+            Changing it signs you out everywhere else. Accounts that only sign in with Plex, Jellyfin, Emby, SSO or a
+            passkey don’t have one.
+          </p>
+        </div>
+        <form onSubmit={submitPassword} className="space-y-2">
+          <input
+            className="input"
+            type="password"
+            placeholder="Current password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+          <input
+            className="input"
+            type="password"
+            placeholder="New password (min 8 characters)"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            autoComplete="new-password"
+            minLength={8}
+            required
+          />
+          <input
+            className="input"
+            type="password"
+            placeholder="Confirm new password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            autoComplete="new-password"
+            minLength={8}
+            required
+          />
+          <button type="submit" className="btn btn-neon" disabled={changePassword.isPending}>
+            {changePassword.isPending ? 'Changing…' : 'Change password'}
+          </button>
+        </form>
+        {passwordMessage && <p className="text-sm text-stone-300">{passwordMessage}</p>}
       </section>
 
       <div className="card p-5">

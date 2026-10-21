@@ -30,7 +30,38 @@ function loadSessionSecret(): string {
 // nginx, SWAG and Cloudflare pass a client-supplied X-Forwarded-For through,
 // anyone could then pick their own IP. Also accepts a comma-separated IP/CIDR
 // list (e.g. to add Cloudflare's ranges in front of nginx) or false.
+//
+// SECURITY — the forgeable case, and why the default stays as it is.
+// Fastify resolves request.ip to the right-most address in
+// [socket.remoteAddress, ...X-Forwarded-For] that is NOT trusted. So when the
+// peer itself is trusted and reaches us over a private address — which is the
+// normal shape for Traefik, nginx or SWAG on the same host or Docker network —
+// a client's own X-Forwarded-For becomes its request.ip. Anything keyed on
+// request.ip (@fastify/rate-limit, the guest-vote network fingerprint) can
+// therefore be rotated away by that client.
+// Defaulting to false does not fix this and makes things worse for the common
+// deployment: every household member would collapse onto the proxy's single
+// address, so one person's failed logins would rate-limit the whole house.
+// Instead the controls that matter are IP-independent (per-account login
+// backoff in auth/throttle.ts, per-poll guest ceiling in polls/guests.ts), and
+// an operator who wants trustworthy IPs pins TRUST_PROXY to their proxy's
+// address or subnet — see README. startupWarnings() nags about the loose cases.
 const PRIVATE_NETWORKS = 'loopback,linklocal,uniquelocal';
+
+// Keywords Fastify's proxy-addr understands alongside IP/CIDR entries.
+const TRUST_KEYWORDS = new Set(['loopback', 'linklocal', 'uniquelocal']);
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+// Deliberately shape-only — proxy-addr does the real parsing. This just has to
+// catch a hostname or a typo before it becomes a 500 on every request.
+function looksLikeAddress(entry: string): boolean {
+  if (TRUST_KEYWORDS.has(entry)) return true;
+  const [address = '', prefix, ...rest] = entry.split('/');
+  if (rest.length) return false;
+  // A prefix length, or the dotted-quad netmask proxy-addr also accepts.
+  if (prefix !== undefined && !/^\d{1,3}$/.test(prefix) && !IPV4.test(prefix)) return false;
+  return IPV4.test(address) || (address.includes(':') && /^[0-9a-f:.]+$/i.test(address));
+}
 
 function parseTrustProxy(v: string | undefined): boolean | string {
   if (v === undefined || v === '') return PRIVATE_NETWORKS;
@@ -42,7 +73,15 @@ function parseTrustProxy(v: string | undefined): boolean | string {
     logger.warn({ TRUST_PROXY: v }, 'TRUST_PROXY hop counts are no longer supported; trusting private networks instead');
     return PRIVATE_NETWORKS;
   }
-  return v;
+  // proxy-addr throws on a bad list at first use, which would surface as a 500
+  // on every request instead of at boot. Reject it here and keep serving.
+  const entries = v.split(',').map((e) => e.trim()).filter(Boolean);
+  const bad = entries.filter((e) => !looksLikeAddress(e));
+  if (!entries.length || bad.length) {
+    logger.error({ TRUST_PROXY: v, invalid: bad }, 'TRUST_PROXY is not a list of IPs, CIDRs or keywords; trusting private networks instead');
+    return PRIVATE_NETWORKS;
+  }
+  return entries.join(',');
 }
 
 // Idle auto-logout windows, in minutes. Admins get a shorter window than
@@ -75,3 +114,19 @@ export const config = {
   sessionSecret: loadSessionSecret(),
   isProd: process.env.NODE_ENV === 'production',
 };
+
+// Say out loud when the effective TRUST_PROXY lets a client choose its own
+// request.ip, with the one-line fix. Called from the server entrypoint so the
+// message lands in the logs an operator actually reads.
+export function warnIfProxyTrustIsLoose() {
+  if (config.trustProxy === true) {
+    logger.warn(
+      'TRUST_PROXY=true believes any X-Forwarded-For, so every client picks its own IP address. Set TRUST_PROXY to your reverse proxy\'s address or subnet instead.',
+    );
+  } else if (config.trustProxy === PRIVATE_NETWORKS) {
+    logger.warn(
+      { TRUST_PROXY: PRIVATE_NETWORKS },
+      'Trusting X-Forwarded-For from any private address: a client reaching Marquee through a proxy on one can choose its own IP, weakening per-IP rate limits. Pin TRUST_PROXY to your proxy (e.g. TRUST_PROXY=172.18.0.0/16) — see README.',
+    );
+  }
+}
