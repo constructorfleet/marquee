@@ -13,10 +13,12 @@ import { Poster } from '../components/Poster';
 type Mode = 'library' | 'watchlist';
 type TypeFilter = 'all' | 'movie' | 'show';
 
+// Source names only — the sentence says whose history it is, so a possessive
+// here reads as the wrong person's on the "your history" side.
 const methodLabel: Record<WatchedMethod, string> = {
-  trakt: 'Trakt history',
-  plex: 'their Plex history',
-  'sync-account': "the server account's history",
+  trakt: 'Trakt',
+  plex: 'Plex',
+  'sync-account': 'the server account',
 };
 
 export function WatchWith() {
@@ -141,8 +143,9 @@ export function WatchWith() {
 
       {libraryResult && (
         <p className="text-center text-xs text-stone-500">
-          {libraryResult.poolSize} candidates neither of you has seen · your history via {methodLabel[libraryResult.myMethod]}, {partner?.username}
-          ’s via {methodLabel[libraryResult.partnerMethod]}
+          {libraryResult.poolSize} candidates neither of you has seen · your history from{' '}
+          {methodLabel[libraryResult.myMethod]}, {partner?.username}
+          ’s from {methodLabel[libraryResult.partnerMethod]}
         </p>
       )}
       {watchlistResult && (

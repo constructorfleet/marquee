@@ -82,8 +82,8 @@ export async function refreshUserWatched(userId: number): Promise<number> {
   return matched.length;
 }
 
-// The user's personal watched set, or null when they haven't connected Trakt
-// (callers then fall back to the Plex-account-level watched flag).
+// The user's personal watched set, or null when Trakt has nothing to say —
+// callers then fall through to the next source.
 export function getWatchedSet(userId: number): Set<number> | null {
   const user = db.select({ traktToken: users.traktToken }).from(users).where(eq(users.id, userId)).get();
   if (!user?.traktToken) return null;
@@ -92,12 +92,17 @@ export function getWatchedSet(userId: number): Set<number> | null {
     .from(userWatched)
     .where(eq(userWatched.userId, userId))
     .all();
+  // A token whose initial sync failed must not outrank the user's own Plex
+  // history by claiming, authoritatively, that they have watched nothing.
+  if (!rows.length) return null;
   return new Set(rows.map((r) => r.mediaId));
 }
 
 // The user's most recently watched media ids, newest first, or null when they
 // haven't connected Trakt. Rows from before watched_at existed carry no time
-// and are left out rather than guessed at.
+// and are left out rather than guessed at. Connected-but-undated stays an empty
+// array, not null: falling through would mix Plex recency with a Trakt watched
+// set. Callers tell the two apart via the `stale` flag in watchwith/service.
 export function getRecentWatchedIds(userId: number, limit: number): number[] | null {
   const user = db.select({ traktToken: users.traktToken }).from(users).where(eq(users.id, userId)).get();
   if (!user?.traktToken) return null;
