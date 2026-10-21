@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { startAuthentication } from '@simplewebauthn/browser';
 import { api, ApiError } from '../api';
 import { useAuth } from '../auth';
 import { MarqueeLogo } from '../components/MarqueeLogo';
+import { clearReturnTo, peekReturnTo } from '../returnTo';
 
 type Mode = 'login' | 'register' | 'setup';
 
@@ -19,9 +20,20 @@ export function Login() {
   const [plexPinId, setPlexPinId] = useState<number | null>(null);
   const [accountKind, setAccountKind] = useState<'local' | 'jellyfin' | 'emby'>('local');
   const plexPopup = useRef<Window | null>(null);
+  // Set when the browser blocked the Plex popup: offered as a link instead.
+  const [plexAuthUrl, setPlexAuthUrl] = useState<string | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Back to the page that sent them here (a shared poll link, Poster Mode…).
+  const [returnTo] = useState(() => (location.state as { from?: string } | null)?.from ?? peekReturnTo() ?? '/');
+  const signedIn = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['auth'] });
+    clearReturnTo();
+    navigate(returnTo, { replace: true });
+  };
 
   // Plex redirects its popup back here with ?plexDone=1 — close it; the opener
   // tab detects the completed sign-in through its own polling.
@@ -58,8 +70,7 @@ export function Login() {
         if (cancelled) return;
         if (!res.pending) {
           plexPopup.current?.close();
-          await queryClient.invalidateQueries({ queryKey: ['auth'] });
-          navigate('/');
+          await signedIn();
           return;
         }
       } catch (err) {
@@ -75,7 +86,7 @@ export function Login() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [plexPinId, navigate, queryClient]);
+  }, [plexPinId]); // signedIn reads only stable values
 
   const passkeyLogin = useMutation({
     mutationFn: async () => {
@@ -86,10 +97,7 @@ export function Login() {
       const response = await startAuthentication({ optionsJSON: options });
       return api('/api/auth/passkey/verify', { body: response });
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['auth'] });
-      navigate('/');
-    },
+    onSuccess: signedIn,
     onError: (err) => {
       if (err instanceof Error && err.name === 'NotAllowedError') return; // user dismissed the prompt
       setError(err instanceof ApiError ? err.message : 'Passkey sign-in failed');
@@ -98,11 +106,18 @@ export function Login() {
 
   const startPlexLogin = async () => {
     setError(null);
+    setPlexAuthUrl(null);
+    // Open the popup within the click itself: browsers (Safari especially) block
+    // popups opened after waiting on the network. It's pointed at Plex below.
+    const popup = window.open('', 'plex-signin', 'popup=yes,width=600,height=760');
     try {
       const res = await api<{ pinId: number; authUrl: string }>('/api/auth/plex/start', { body: {} });
-      plexPopup.current = window.open(res.authUrl, 'plex-signin', 'popup=yes,width=600,height=760');
+      if (popup) popup.location.href = res.authUrl;
+      else setPlexAuthUrl(res.authUrl); // still blocked: offer a link
+      plexPopup.current = popup;
       setPlexPinId(res.pinId);
     } catch (err) {
+      popup?.close();
       setError(err instanceof ApiError ? err.message : 'Could not start Plex sign-in');
     }
   };
@@ -115,10 +130,7 @@ export function Login() {
       const endpoint = activeMode === 'login' && accountKind !== 'local' ? accountKind : activeMode;
       return api(`/api/auth/${endpoint}`, { body: { username, password } });
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['auth'] });
-      navigate('/');
-    },
+    onSuccess: signedIn,
     onError: (err) => setError(err instanceof ApiError ? err.message : 'Something went wrong'),
   });
 
@@ -130,7 +142,7 @@ export function Login() {
     );
   }
   if (isLoading) return null;
-  if (data?.user) return <Navigate to="/" replace />;
+  if (data?.user) return <Navigate to={returnTo} replace />;
 
   const needsConfirm = activeMode !== 'login';
   const onSubmit = (e: FormEvent) => {
@@ -278,6 +290,15 @@ export function Login() {
                   >
                     {plexPinId !== null ? 'Waiting for Plex — approve in the popup…' : 'Sign in with Plex'}
                   </button>
+                  {plexPinId !== null && plexAuthUrl && (
+                    <p className="text-center text-sm text-stone-300">
+                      Your browser blocked the popup —{' '}
+                      <a href={plexAuthUrl} target="_blank" rel="noreferrer" className="text-neon-300 underline">
+                        open Plex sign-in
+                      </a>
+                      , approve it, then come back to this tab.
+                    </p>
+                  )}
                   {plexPinId !== null && (
                     <button
                       type="button"

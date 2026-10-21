@@ -59,6 +59,11 @@ export function EditPollOptions({ poll, onClose }: { poll: PollDetail; onClose: 
     if (detailsChanged && title.trim()) saveDetails.mutate(undefined, { onSuccess: onClose });
     else onClose();
   };
+  // Escape or a click outside: don't save, but don't drop typed edits unasked either.
+  const dismiss = () => {
+    if (detailsChanged && !window.confirm('Discard your changes to the title and description?')) return;
+    onClose();
+  };
 
   const busy = add.isPending || remove.isPending;
   const canRemove = poll.options.length > 2;
@@ -67,7 +72,7 @@ export function EditPollOptions({ poll, onClose }: { poll: PollDetail; onClose: 
   const inPoll = new Set(poll.options.map((o) => o.mediaId));
 
   return (
-    <Modal wide onClose={onClose}>
+    <Modal wide onClose={dismiss}>
       <div className="space-y-5">
         <div className="flex items-start justify-between gap-3">
           <div>

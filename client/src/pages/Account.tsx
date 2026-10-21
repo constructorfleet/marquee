@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { startRegistration } from '@simplewebauthn/browser';
 import type { PasskeyInfo } from '@marquee/shared';
@@ -9,7 +8,6 @@ import { useAuth, useLogout } from '../auth';
 export function Account() {
   const { data: auth } = useAuth();
   const logout = useLogout();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [passkeyName, setPasskeyName] = useState('');
   const [message, setMessage] = useState<string | null>(null);
@@ -105,7 +103,7 @@ export function Account() {
       <div className="card p-5">
         <button
           className="btn btn-danger"
-          onClick={() => logout.mutate(undefined, { onSuccess: () => navigate('/login') })}
+          onClick={() => logout.mutate()}
         >
           Sign out
         </button>

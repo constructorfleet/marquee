@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PublicPoll as PublicPollData } from '@marquee/shared';
 import { api, ApiError } from '../api';
+import { useLiveUpdates } from '../liveUpdates';
 import { MarqueeLogo } from '../components/MarqueeLogo';
 import { Poster } from '../components/Poster';
 
@@ -26,13 +27,9 @@ export function PublicPoll() {
   });
 
   // Live results: refetch whenever the server announces a change on this poll.
-  const loaded = !!poll;
-  useEffect(() => {
-    if (!loaded) return;
-    const source = new EventSource(`${base}/events`);
-    source.onmessage = () => queryClient.invalidateQueries({ queryKey: ['public-poll', publicToken] });
-    return () => source.close();
-  }, [loaded, base, publicToken, queryClient]);
+  useLiveUpdates(poll ? `${base}/events` : null, () =>
+    queryClient.invalidateQueries({ queryKey: ['public-poll', publicToken] }),
+  );
 
   const voterName = name ?? poll?.voterName ?? '';
   const vote = useMutation({
@@ -42,7 +39,11 @@ export function PublicPoll() {
       setError(null);
       queryClient.setQueryData(queryKey, data);
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Something went wrong'),
+    onError: (err) => {
+      setError(err instanceof ApiError ? err.message : 'Something went wrong');
+      // e.g. voting closed while the page sat open: show the poll as it is now.
+      queryClient.invalidateQueries({ queryKey });
+    },
   });
 
   let content;

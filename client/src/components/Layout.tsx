@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { VersionInfo } from '@marquee/shared';
 import { api } from '../api';
+import { applyUpdate, onUpdateReady } from '../appUpdate';
 import { useAuth } from '../auth';
 import { IdleLogout } from './IdleLogout';
 import { MarqueeLogo } from './MarqueeLogo';
@@ -57,6 +58,20 @@ function DatabaseBanner() {
   );
 }
 
+// A new release has installed and is waiting; it also switches over on the next page change.
+function AppUpdateNotice() {
+  return (
+    <div className="border-b border-neon-500/20 bg-neon-500/10">
+      <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
+        <span className="text-neon-300">✦ A new version of Marquee is ready.</span>
+        <button className="text-neon-300 underline hover:text-neon-400" onClick={applyUpdate}>
+          Reload now
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-lg px-3 py-2 text-sm transition-colors ${
     isActive ? 'bg-neon-500/15 text-neon-300' : 'text-stone-400 hover:text-neon-300'
@@ -93,6 +108,11 @@ export function Layout() {
 
   // Close the mobile menu whenever the route changes.
   useEffect(() => setMenuOpen(false), [location.pathname]);
+
+  // A waiting release switches over between pages, where nothing typed can be lost.
+  const [updateReady, setUpdateReady] = useState(false);
+  useEffect(() => onUpdateReady(setUpdateReady), []);
+  useEffect(() => applyUpdate(), [location.pathname]);
 
   // One source of truth for both the desktop bar and the mobile dropdown.
   const links = [
@@ -147,6 +167,7 @@ export function Layout() {
         )}
       </header>
       {version?.databaseProblem && <DatabaseBanner />}
+      {updateReady && <AppUpdateNotice />}
       {version && <UpdateBanner key={version.latest ?? 'none'} version={version} />}
       <main className="mx-auto max-w-5xl px-4 py-6 pb-16">
         <Outlet />

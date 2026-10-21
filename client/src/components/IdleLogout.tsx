@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { api } from '../api';
+import { rememberReturnTo } from '../returnTo';
 
 // User interactions that count as activity and reset the idle clock.
 const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'wheel'] as const;
@@ -53,6 +54,8 @@ export function IdleLogout({ timeoutMinutes }: { timeoutMinutes: number }) {
         // Even if the logout call fails, the session is already idle-expired
         // server-side; send the user to the login page regardless.
       }
+      // Signing back in returns here.
+      rememberReturnTo(window.location.pathname + window.location.search);
       window.location.assign('/login?reason=idle');
     }, CHECK_INTERVAL_MS);
 

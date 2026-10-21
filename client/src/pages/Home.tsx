@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PollSummary } from '@marquee/shared';
 import { api } from '../api';
+import { useLiveUpdates } from '../liveUpdates';
 
 const statusChip: Record<string, string> = {
   open: 'chip bg-neon-500/20 text-neon-300',
@@ -115,11 +116,7 @@ function PollCard({ poll }: { poll: PollSummary }) {
 // the home page with live results (or the winner once it's closed).
 function SpotlightWidget({ poll }: { poll: PollSummary }) {
   const queryClient = useQueryClient();
-  useEffect(() => {
-    const source = new EventSource(`/api/polls/${poll.shareToken}/events`);
-    source.onmessage = () => queryClient.invalidateQueries({ queryKey: ['polls'] });
-    return () => source.close();
-  }, [poll.shareToken, queryClient]);
+  useLiveUpdates(`/api/polls/${poll.shareToken}/events`, () => queryClient.invalidateQueries({ queryKey: ['polls'] }));
 
   const total = poll.options.reduce((a, o) => a + o.votes, 0);
   const winner = poll.status === 'closed' ? poll.options.find((o) => o.id === poll.winnerOptionId) : null;

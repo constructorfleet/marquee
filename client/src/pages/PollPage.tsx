@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DiscordStatus, PollDetail } from '@marquee/shared';
 import { api, ApiError } from '../api';
+import { copyText } from '../clipboard';
+import { useLiveUpdates } from '../liveUpdates';
 import { useAuth } from '../auth';
 import { EditPollOptions } from '../components/EditPollOptions';
 import { MediaDetailsModal } from '../components/MediaDetails';
@@ -30,17 +32,18 @@ export function PollPage() {
   });
 
   // Live results: refetch whenever the server announces a change on this poll.
-  useEffect(() => {
-    if (!token) return;
-    const source = new EventSource(`/api/polls/${token}/events`);
-    source.onmessage = () => queryClient.invalidateQueries({ queryKey: ['poll', token] });
-    return () => source.close();
-  }, [token, queryClient]);
+  useLiveUpdates(token ? `/api/polls/${token}/events` : null, () =>
+    queryClient.invalidateQueries({ queryKey: ['poll', token] }),
+  );
 
   const vote = useMutation({
     mutationFn: (optionId: number) => api<PollDetail>(`/api/polls/${token}/vote`, { body: { optionId } }),
     onSuccess: (data) => queryClient.setQueryData(['poll', token], data),
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Something went wrong'),
+    onError: (err) => {
+      setError(err instanceof ApiError ? err.message : 'Something went wrong');
+      // e.g. it closed or you already voted from another tab: show the poll as it is now.
+      queryClient.invalidateQueries({ queryKey: ['poll', token] });
+    },
   });
 
   const { data: auth } = useAuth();
@@ -84,6 +87,7 @@ export function PollPage() {
       queryClient.invalidateQueries({ queryKey: ['polls'] });
       navigate('/');
     },
+    onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not delete the poll'),
   });
 
   // Admins can share a poll at a public link that needs no login to vote.
@@ -93,21 +97,26 @@ export function PollPage() {
     onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not update the public link'),
   });
 
+  // The share sheet and clipboard API only exist on https (or localhost), so a
+  // plain-http install falls back to an older copy method, then to a prompt.
   const share = async (url: string, setDone: (done: boolean) => void) => {
     if (navigator.share) {
       await navigator.share({ title: poll?.title, url }).catch(() => {});
-    } else {
-      await navigator.clipboard.writeText(url);
+    } else if (await copyText(url)) {
       setDone(true);
       setTimeout(() => setDone(false), 2000);
+    } else {
+      window.prompt('Copy this link:', url);
     }
   };
 
   if (isLoading) return <p className="text-stone-400">Loading…</p>;
   if (!poll) return <p className="text-stone-400">Poll not found.</p>;
 
+  // Matches the server: the owner or any admin can run the poll.
+  const canManage = poll.isOwner || !!auth?.user?.isAdmin;
   const canVote = poll.status === 'open' && poll.myVoteOptionId === null;
-  const showResults = poll.myVoteOptionId !== null || poll.status === 'closed' || poll.isOwner;
+  const showResults = poll.myVoteOptionId !== null || poll.status === 'closed' || canManage;
   const winner = poll.options.find((o) => o.id === poll.winnerOptionId);
   const publicUrl = poll.publicToken ? `${window.location.origin}/vote/${poll.publicToken}` : null;
 
@@ -171,12 +180,12 @@ export function PollPage() {
               {poll.spotlight ? 'Unspotlight' : 'Spotlight'}
             </button>
           )}
-          {poll.isOwner && poll.status === 'draft' && (
+          {canManage && poll.status === 'draft' && (
             <button className="btn btn-neon" onClick={() => transition.mutate('open')}>
               Open voting
             </button>
           )}
-          {poll.isOwner && poll.status === 'open' && discord?.connected && !poll.discordPosted && (
+          {canManage && poll.status === 'open' && discord?.connected && !poll.discordPosted && (
             <button
               className="btn btn-ghost"
               disabled={postDiscord.isPending}
@@ -189,17 +198,17 @@ export function PollPage() {
             </button>
           )}
           {poll.discordPosted && <span className="chip self-center bg-neon-500/15 text-neon-300">On Discord ✓</span>}
-          {(poll.isOwner || auth?.user?.isAdmin) && poll.status !== 'closed' && (
+          {canManage && poll.status !== 'closed' && (
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>
               Edit poll
             </button>
           )}
-          {poll.isOwner && poll.status === 'open' && (
+          {canManage && poll.status === 'open' && (
             <button className="btn btn-danger" onClick={() => transition.mutate('close')}>
               Close voting
             </button>
           )}
-          {poll.isOwner && (
+          {canManage && (
             <button
               className="btn btn-ghost"
               onClick={() => {

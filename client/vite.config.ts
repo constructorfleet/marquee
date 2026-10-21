@@ -8,7 +8,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // A new release waits until the app picks a safe moment to switch over
+      // (see src/appUpdate.ts) instead of reloading pages mid-form.
+      registerType: 'prompt',
       includeAssets: ['icon.svg', 'pwa-192.png', 'pwa-512.png', 'pwa-maskable-512.png', 'apple-touch-icon.png'],
       manifest: {
         name: 'Marquee',

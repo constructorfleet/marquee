@@ -645,6 +645,21 @@ export function Admin() {
 
   const onError = (err: unknown) => setMessage(err instanceof ApiError ? `✗ ${err.message}` : '✗ Something went wrong');
 
+  // Each settings card shows its own result, so a failed save is reported on the
+  // card that was saved — not on the Plex card in another tab.
+  const messageFor = (body: Record<string, unknown>) =>
+    'plexUrl' in body
+      ? setMessage
+      : 'traktClientId' in body
+        ? setTraktMessage
+        : 'tmdbApiKey' in body
+          ? setTmdbMessage
+          : 'discordChannelId' in body || 'discordBotToken' in body
+            ? setDiscordMessage
+            : 'oidcIssuer' in body
+              ? setOidcMessage
+              : setSeerrMessage;
+
   const save = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       api<AdminSettings>('/api/admin/settings', { method: 'PUT', body }),
@@ -670,7 +685,7 @@ export function Admin() {
       }
       queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] });
     },
-    onError,
+    onError: (err, body) => messageFor(body)(err instanceof ApiError ? `✗ ${err.message}` : '✗ Save failed'),
   });
 
   const startScan = useMutation({

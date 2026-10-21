@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { MediaItem, NowPlayingResponse } from '@marquee/shared';
 import { api } from '../api';
 import { Poster } from '../components/Poster';
+
+// Now-playing data older than this (several missed 10 s polls) is no longer shown.
+const STALE_AFTER_MS = 45_000;
 
 function msToClock(ms: number): string {
   const totalMinutes = Math.max(0, Math.floor(ms / 60_000));
@@ -19,9 +22,7 @@ export function PosterMode() {
   const [now, setNow] = useState(Date.now());
   const [idleIndex, setIdleIndex] = useState(0);
   const [sessionIndex, setSessionIndex] = useState(0);
-  const fetchedAtRef = useRef(Date.now());
-
-  const { data } = useQuery({
+  const { data, dataUpdatedAt, isError } = useQuery({
     queryKey: ['nowplaying'],
     queryFn: () => api<NowPlayingResponse>('/api/nowplaying'),
     refetchInterval: 10_000,
@@ -31,10 +32,6 @@ export function PosterMode() {
     queryFn: () => api<MediaItem[]>('/api/media?sort=random'),
     staleTime: Infinity,
   });
-
-  useEffect(() => {
-    fetchedAtRef.current = Date.now();
-  }, [data]);
 
   // 1s tick so the progress bar moves between polls.
   useEffect(() => {
@@ -57,7 +54,10 @@ export function PosterMode() {
     return () => clearInterval(timer);
   }, [idlePool, refetchIdle]);
 
-  const sessions = data?.sessions ?? [];
+  // If the server stops answering, show idle posters rather than freezing on the
+  // last thing that was playing. (An expired session returns to the login page.)
+  const live = !isError && now - dataUpdatedAt < STALE_AFTER_MS;
+  const sessions = live ? (data?.sessions ?? []) : [];
 
   // Carousel across simultaneous streams: auto-advance, keep the index valid
   // as streams start and stop.
@@ -78,7 +78,7 @@ export function PosterMode() {
   const elapsed = session
     ? Math.min(
         session.durationMs,
-        session.progressMs + (session.state === 'playing' ? now - fetchedAtRef.current : 0),
+        session.progressMs + (session.state === 'playing' ? now - dataUpdatedAt : 0),
       )
     : 0;
   const pct = session && session.durationMs > 0 ? (elapsed / session.durationMs) * 100 : 0;

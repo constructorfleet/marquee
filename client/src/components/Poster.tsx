@@ -12,9 +12,11 @@ export function Poster({
   src?: string;
   className?: string;
 }) {
-  const [failed, setFailed] = useState(false);
+  // Remember which image failed, not just that one did: the same card shows a
+  // different title after each randomizer spin.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const url = src ?? (mediaId ? `/api/media/${mediaId}/poster` : null);
-  if (!url || failed) {
+  if (!url || url === failedUrl) {
     return (
       <div className={`flex aspect-[2/3] items-center justify-center bg-ink-700 text-3xl ${className}`} aria-label={title}>
         🎬
@@ -26,7 +28,7 @@ export function Poster({
       src={url}
       alt={title}
       loading="lazy"
-      onError={() => setFailed(true)}
+      onError={() => setFailedUrl(url)}
       className={`aspect-[2/3] w-full object-cover ${className}`}
     />
   );

@@ -1,26 +1,24 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { registerSW } from 'virtual:pwa-register';
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ApiError } from './api';
 import App from './App';
+import { startUpdateChecks } from './appUpdate';
 import './index.css';
 
-// Pick up new releases without a hard refresh: autoUpdate activates a newly
-// deployed service worker right away, and registerSW reloads the page onto it.
-// Browsers only look for one on a full page load, so also check whenever the
-// app comes back to the foreground — an installed app can stay open for days.
-registerSW({
-  immediate: true,
-  onRegisteredSW(_swUrl, registration) {
-    if (!registration) return;
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') registration.update().catch(() => {});
-    });
-  },
-});
+startUpdateChecks();
+
+// Any 401 means the session ended (expired, idle or revoked). Re-check who's
+// signed in so the app goes back to the login page — and returns here after —
+// instead of sitting on stale data, like a wall-mounted Poster Mode would.
+const onAuthError = (err: unknown) => {
+  if (err instanceof ApiError && err.status === 401) void queryClient.invalidateQueries({ queryKey: ['auth'] });
+};
 
 const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: onAuthError }),
+  mutationCache: new MutationCache({ onError: onAuthError }),
   defaultOptions: {
     queries: { retry: 1, refetchOnWindowFocus: false },
   },
