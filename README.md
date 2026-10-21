@@ -61,7 +61,7 @@ Post a poll to a channel and people vote with buttons — **no Marquee account n
 
 - **Media servers**: Plex, Jellyfin, and Emby — any combination at once, with cross-server de-duplication and automatic library sync (every few hours or daily at a set time). Titles removed from a server disappear from search and the randomizer but stay in past polls and lists, and come back if re-added
 - **Sign-in options**: local accounts, Sign in with Plex (popup PIN flow), Jellyfin/Emby credentials, OIDC (Authentik/Authelia/Keycloak/…), and passkeys (WebAuthn)
-- **User management**: create accounts, import your Plex Home members and friends in one click (safe to re-run as new people join), set/reset passwords, promote admins, disable open registration. Usernames are case-insensitive — "Michael" and "michael" are the same account
+- **User management**: create accounts, import your Plex Home members and friends — or every account on your Jellyfin/Emby server — in one click (safe to re-run as new people join), set/reset passwords, promote admins, disable open registration. Usernames are case-insensitive — "Michael" and "michael" are the same account
 - **Trakt**: users connect their own accounts for personal watch status everywhere
 - **Issue reports**: users flag problems to the admin in-app
 - **Database health**: a daily integrity check warns admins about database damage (see [Database health](#database-health))
@@ -245,7 +245,7 @@ curl -H "Authorization: Bearer $KEY" "https://marquee.example.com/api/widget/pol
 - Failed password sign-ins back off **per account**, not per IP address, so the rate limit can't be sidestepped by spoofing `X-Forwarded-For`. The wait is capped and forgotten after an hour, and it never applies to Plex, SSO or passkey sign-in — there's always another way in
 - Rate limiting on all credential endpoints; security headers via Helmet
 - Media-server tokens/keys never reach the browser — posters proxy through the server
-- **Registration is closed by default** — turn it on under Admin → Access for an open instance. Closed means Jellyfin/Emby sign-ins won't create accounts either, so pointing Marquee at those servers for library sync doesn't quietly give everyone on them a way in
+- **Registration is closed by default** — turn it on under Admin → Access for an open instance. Closed means Jellyfin/Emby sign-ins won't create accounts either, so pointing Marquee at those servers for library sync doesn't quietly give everyone on them a way in. Import the people you *do* want from Admin → Users instead, and leave it closed
 - Public poll links cap guest votes per network *and* per poll, so a shared link can't be stuffed
 - The container runs as a non-root user with no capabilities beyond the three its startup needs, on a read-only root filesystem, with `no-new-privileges`
 
