@@ -43,6 +43,15 @@ interface JfUser {
   Policy?: { IsAdministrator?: boolean };
 }
 
+// Every account on the server, for admin user import. The API key is the
+// server's own, so this needs no per-user credentials.
+export async function listJfUsers(kind: JfKind): Promise<{ id: string; name: string }[]> {
+  const cfg = getJfConfig(kind);
+  if (!cfg) throw new Error(`${kind} is not configured`);
+  const jfUsers = await jfGet<JfUser[]>(cfg, '/Users');
+  return jfUsers.filter((u) => u.Name).map((u) => ({ id: u.Id, name: u.Name }));
+}
+
 // Watch state (UserData) is per-user; sync uses an admin user's perspective,
 // mirroring how the Plex source uses the configured token's account.
 async function pickUserId(cfg: { url: string; apiKey: string }): Promise<string> {
