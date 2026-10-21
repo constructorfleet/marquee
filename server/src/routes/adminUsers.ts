@@ -8,6 +8,7 @@ import { runIntegrityCheck } from '../db/health.js';
 import { hashPassword } from '../auth/passwords.js';
 import { uniqueUsername, usernameTaken } from '../auth/usernames.js';
 import { getFriends, getHomeUsers } from '../plex/plextv.js';
+import { getJfConfig, listJfUsers } from '../jellyfin/client.js';
 import { getPlexConfig } from '../settings.js';
 
 function serializeUser(u: typeof users.$inferSelect, guestName: string | null = null) {
@@ -158,4 +159,53 @@ export async function adminUserRoutes(app: FastifyInstance) {
     }
     return { imported, skipped };
   });
+
+  // The Jellyfin/Emby counterpart, for households where those servers — not
+  // plex.tv — are the roster. They sign in later and match on the provider id.
+  app.post<{ Params: { kind: string } }>(
+    '/api/admin/users/import/:kind',
+    { preHandler: requireAdmin },
+    async (request, reply) => {
+      const kind = request.params.kind;
+      if (kind !== 'jellyfin' && kind !== 'emby') return reply.code(404).send({ error: 'Unknown media server' });
+      if (!getJfConfig(kind)) return reply.code(503).send({ error: `${kind} is not configured` });
+      // A damaged index makes the existing-account lookup miss, which would
+      // import every user a second time.
+      if (!runIntegrityCheck().ok) {
+        return reply.code(409).send({
+          error:
+            'The database check found problems, so importing is paused to avoid duplicate accounts — see the Admin overview',
+        });
+      }
+
+      let candidates: { id: string; name: string }[];
+      try {
+        candidates = await listJfUsers(kind);
+      } catch (err) {
+        return reply.code(502).send({ error: err instanceof Error ? err.message : `Could not reach ${kind}` });
+      }
+
+      const idColumn = kind === 'jellyfin' ? users.jellyfinId : users.embyId;
+      const seen = new Set<string>();
+      let imported = 0;
+      let skipped = 0;
+      for (const candidate of candidates) {
+        if (seen.has(candidate.id)) continue;
+        seen.add(candidate.id);
+        if (db.select({ id: users.id }).from(users).where(eq(idColumn, candidate.id)).get()) {
+          skipped++;
+          continue;
+        }
+        db.insert(users)
+          .values({
+            username: uniqueUsername(candidate.name),
+            passwordHash: null,
+            ...(kind === 'jellyfin' ? { jellyfinId: candidate.id } : { embyId: candidate.id }),
+          })
+          .run();
+        imported++;
+      }
+      return { imported, skipped };
+    },
+  );
 }
