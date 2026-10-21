@@ -1,9 +1,15 @@
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { decryptSecret, encryptSecret } from '../crypto.js';
 import { db } from '../db/index.js';
 import { media, users, userWatched } from '../db/schema.js';
 import { logger } from '../logger.js';
-import { getTraktApp, getWatched, refreshAccessToken, TraktAuthError, type TraktIds } from './client.js';
+import {
+  getTraktApp,
+  getWatched,
+  refreshAccessToken,
+  TraktAuthError,
+  type TraktWatchedEntry,
+} from './client.js';
 
 // Pull the user's watched movies/shows from Trakt and match them against the
 // synced library by IMDb/TMDb id. Replaces the user's user_watched rows.
@@ -16,8 +22,8 @@ export async function refreshUserWatched(userId: number): Promise<number> {
   const fetchAll = (token: string) =>
     Promise.all([getWatched(app.clientId, token, 'movies'), getWatched(app.clientId, token, 'shows')]);
 
-  let movies: TraktIds[];
-  let shows: TraktIds[];
+  let movies: TraktWatchedEntry[];
+  let shows: TraktWatchedEntry[];
   try {
     [movies, shows] = await fetchAll(decryptSecret(user.traktToken));
   } catch (err) {
@@ -32,26 +38,44 @@ export async function refreshUserWatched(userId: number): Promise<number> {
     [movies, shows] = await fetchAll(renewed.accessToken);
   }
 
-  const idSets = (list: TraktIds[]) => ({
-    imdb: new Set(list.map((i) => i.imdb).filter(Boolean) as string[]),
-    tmdb: new Set(list.map((i) => (i.tmdb != null ? String(i.tmdb) : null)).filter(Boolean) as string[]),
-  });
-  const movieIds = idSets(movies);
-  const showIds = idSets(shows);
+  // Membership is "the id is present"; the value is only its watch time, which
+  // Trakt may omit — so presence is tested with has(), never with the value.
+  const idTimes = (list: TraktWatchedEntry[]) => {
+    const imdb = new Map<string, string | null>();
+    const tmdb = new Map<string, string | null>();
+    for (const entry of list) {
+      if (entry.ids.imdb) imdb.set(entry.ids.imdb, entry.lastWatchedAt);
+      if (entry.ids.tmdb != null) tmdb.set(String(entry.ids.tmdb), entry.lastWatchedAt);
+    }
+    return { imdb, tmdb };
+  };
+  const movieIds = idTimes(movies);
+  const showIds = idTimes(shows);
 
   const rows = db
     .select({ id: media.id, type: media.type, imdbId: media.imdbId, tmdbId: media.tmdbId })
     .from(media)
     .all();
-  const matched = rows.filter((r) => {
+  const matched: { id: number; watchedAt: Date | null }[] = [];
+  for (const r of rows) {
     const ids = r.type === 'movie' ? movieIds : showIds;
-    return (r.imdbId && ids.imdb.has(r.imdbId)) || (r.tmdbId && ids.tmdb.has(r.tmdbId));
-  });
+    const at =
+      r.imdbId && ids.imdb.has(r.imdbId)
+        ? ids.imdb.get(r.imdbId)!
+        : r.tmdbId && ids.tmdb.has(r.tmdbId)
+          ? ids.tmdb.get(r.tmdbId)!
+          : undefined;
+    if (at === undefined) continue;
+    matched.push({ id: r.id, watchedAt: at ? new Date(at) : null });
+  }
 
   db.transaction((tx) => {
     tx.delete(userWatched).where(eq(userWatched.userId, userId)).run();
     for (const m of matched) {
-      tx.insert(userWatched).values({ userId, mediaId: m.id }).onConflictDoNothing().run();
+      tx.insert(userWatched)
+        .values({ userId, mediaId: m.id, watchedAt: m.watchedAt })
+        .onConflictDoNothing()
+        .run();
     }
   });
 
@@ -69,4 +93,20 @@ export function getWatchedSet(userId: number): Set<number> | null {
     .where(eq(userWatched.userId, userId))
     .all();
   return new Set(rows.map((r) => r.mediaId));
+}
+
+// The user's most recently watched media ids, newest first, or null when they
+// haven't connected Trakt. Rows from before watched_at existed carry no time
+// and are left out rather than guessed at.
+export function getRecentWatchedIds(userId: number, limit: number): number[] | null {
+  const user = db.select({ traktToken: users.traktToken }).from(users).where(eq(users.id, userId)).get();
+  if (!user?.traktToken) return null;
+  return db
+    .select({ mediaId: userWatched.mediaId })
+    .from(userWatched)
+    .where(and(eq(userWatched.userId, userId), isNotNull(userWatched.watchedAt)))
+    .orderBy(desc(userWatched.watchedAt))
+    .limit(limit)
+    .all()
+    .map((r) => r.mediaId);
 }
