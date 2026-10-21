@@ -45,8 +45,17 @@ interface SeerrUser {
 const USER_CACHE_MS = 5 * 60_000;
 let userCache: { at: number; users: SeerrUser[] } | null = null;
 
-export function clearSeerrUserCache() {
+// What one title is similar to barely changes, and a single randomizer spin
+// seeds from several titles — so hold recommendations for an hour.
+const RECS_CACHE_MS = 60 * 60_000;
+const RECS_CACHE_MAX = 500;
+const recsCache = new Map<string, { at: number; tmdbIds: number[] }>();
+
+// Called when the request-service settings change: a new URL or key may be a
+// different instance, so nothing cached from the old one still applies.
+export function clearSeerrCaches() {
   userCache = null;
+  recsCache.clear();
 }
 
 async function seerrUsers(cfg: SeerrConfig): Promise<SeerrUser[]> {
@@ -110,6 +119,40 @@ export async function canRequest(who: Requester): Promise<boolean> {
   } catch {
     return true;
   }
+}
+
+// TMDb ids Overseerr/Jellyseerr considers related to one title: its
+// "recommendations" and "similar" lists merged. Ombi exposes no equivalent, so
+// callers must check cfg.kind first.
+export async function similarTmdbIds(
+  cfg: SeerrConfig,
+  type: 'movie' | 'tv',
+  tmdbId: number,
+): Promise<number[]> {
+  const cacheKey = `${type}:${tmdbId}`;
+  const cached = recsCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < RECS_CACHE_MS) return cached.tmdbIds;
+
+  const found = new Set<number>();
+  for (const list of ['recommendations', 'similar'] as const) {
+    const res = await fetch(`${base(cfg.url)}/api/v1/${type}/${tmdbId}/${list}`, {
+      headers: { 'X-Api-Key': cfg.apiKey, Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`The request service responded ${res.status} while looking up ${list}`);
+    for (const result of ((await res.json()) as { results?: { id?: number }[] }).results ?? []) {
+      if (typeof result.id === 'number') found.add(result.id);
+    }
+  }
+
+  // Insertion-ordered eviction bounds the cache on a long-running instance.
+  if (!recsCache.has(cacheKey) && recsCache.size >= RECS_CACHE_MAX) {
+    const oldest = recsCache.keys().next().value;
+    if (oldest !== undefined) recsCache.delete(oldest);
+  }
+  const tmdbIds = [...found];
+  recsCache.set(cacheKey, { at: Date.now(), tmdbIds });
+  return tmdbIds;
 }
 
 export async function requestMovie(cfg: SeerrConfig, tmdbId: number, asSeerrUser: number | null): Promise<void> {

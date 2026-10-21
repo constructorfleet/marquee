@@ -23,6 +23,8 @@ Poll cards show each option's poster sized by its share of the vote — front-ru
 
 Can't decide? Draw a random title from the whole library, a single library, a server collection, or a custom list — filtered by movie/show, genre, year range, minimum rating, and **your personal watch history**. Save any spin as a weekly or one-time schedule with optional Discord announcements.
 
+Tick **Like what I've been watching** and the draw is narrowed to library titles that Overseerr/Jellyseerr recommends from your own last few watches ("spin something like my recent viewing"). It needs dated watch history — Trakt, or Sign in with Plex — and if that or the request service isn't available, the spin still happens with your other filters and tells you the narrowing was skipped.
+
 ![Randomizer](docs/screenshots/randomizer.png)
 
 The pick is revealed in a modal — spin again right there until something sticks.
@@ -111,7 +113,7 @@ Everything else — media servers, Trakt, TMDb, Discord, request services, OIDC,
 | **Trakt** | Free [API app](https://trakt.tv/oauth/applications) (redirect URI `urn:ietf:wg:oauth:2.0:oob`) | Per-user watch history |
 | **TMDb** | Free [API key](https://www.themoviedb.org/settings/api) | Film-series scan + missing-title detection |
 | **Discord** | Bot token + channel ID | Poll voting from Discord, winner announcements |
-| **Overseerr / Jellyseerr / Ombi** | Service URL + API key | One-click requests for missing titles. With Overseerr/Jellyseerr each request is made as the person's own account there (matched by Plex, Jellyfin or Emby sign-in), so its permissions and quotas apply; Ombi requests are admin-only |
+| **Overseerr / Jellyseerr / Ombi** | Service URL + API key | One-click requests for missing titles. With Overseerr/Jellyseerr each request is made as the person's own account there (matched by Plex, Jellyfin or Emby sign-in), so its permissions and quotas apply; Ombi requests are admin-only. Overseerr/Jellyseerr also powers the randomizer's "like what I've been watching" filter |
 | **OIDC** | Issuer URL + client ID/secret | Single sign-on |
 
 ## Widget API
