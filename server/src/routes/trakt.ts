@@ -63,14 +63,17 @@ export async function traktRoutes(app: FastifyInstance) {
       .where(eq(users.id, request.user!.id))
       .run();
 
-    // Pull history right away; a failure here shouldn't undo the connection.
+    // Pull history right away; a failure here shouldn't undo the connection, but
+    // it must be reported — watchedCount 0 is otherwise read as "watched nothing".
     let count = 0;
+    let syncError: string | null = null;
     try {
       count = await refreshUserWatched(request.user!.id);
     } catch (err) {
       request.log.warn(err, 'initial Trakt watched sync failed');
+      syncError = err instanceof Error ? err.message : 'Could not pull your Trakt history';
     }
-    return { connected: true, watchedCount: count };
+    return { connected: true, watchedCount: count, syncError };
   });
 
   app.post('/api/trakt/refresh', { preHandler: requireUser }, async (request, reply) => {

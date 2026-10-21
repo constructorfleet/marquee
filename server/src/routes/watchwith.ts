@@ -109,12 +109,14 @@ export async function watchWithRoutes(app: FastifyInstance) {
 
     // If the pick is in the library (and still on the server), return the full
     // local record; otherwise it's offered as a request.
+    // TMDb movie and TV ids overlap, so the type must match (see sources/dedupe.ts).
+    const pickType = pick.type === 'show' ? 'show' : 'movie';
     let mediaRow = null;
     for (const guid of pick.guids) {
       if (guid.startsWith('imdb://')) {
-        mediaRow = db.select().from(media).where(and(eq(media.imdbId, guid.slice(7)), isNull(media.removedAt))).get() ?? null;
+        mediaRow = db.select().from(media).where(and(eq(media.imdbId, guid.slice(7)), eq(media.type, pickType), isNull(media.removedAt))).get() ?? null;
       } else if (guid.startsWith('tmdb://')) {
-        mediaRow = db.select().from(media).where(and(eq(media.tmdbId, guid.slice(7)), isNull(media.removedAt))).get() ?? null;
+        mediaRow = db.select().from(media).where(and(eq(media.tmdbId, guid.slice(7)), eq(media.type, pickType), isNull(media.removedAt))).get() ?? null;
       }
       if (mediaRow) break;
     }
