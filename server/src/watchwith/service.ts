@@ -89,8 +89,8 @@ export async function recentlyWatchedForUser(
   userId: number,
   limit: number,
 ): Promise<{ mediaIds: number[]; method: WatchedMethod; stale: boolean }> {
-  const traktIds = getRecentWatchedIds(userId, limit);
-  if (traktIds) return { mediaIds: traktIds, method: 'trakt', stale: !traktIds.length };
+  const trakt = getRecentWatchedIds(userId, limit);
+  if (trakt) return { mediaIds: trakt.mediaIds, method: 'trakt', stale: trakt.undated };
 
   const token = ownPlexToken(userId);
   if (token) {

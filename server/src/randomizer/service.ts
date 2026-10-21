@@ -56,8 +56,8 @@ async function narrowToSimilar(
   if (!cfg) return keep(skipped('not-configured'));
   if (cfg.kind === 'ombi') return keep(skipped('unsupported'));
 
-  const { mediaIds } = await recentlyWatchedForUser(viewerId, seedCount);
-  if (!mediaIds.length) return keep(skipped('no-history'));
+  const { mediaIds, stale } = await recentlyWatchedForUser(viewerId, seedCount);
+  if (!mediaIds.length) return keep(skipped(stale ? 'history-stale' : 'no-history'));
   const seeds = db
     .select({ type: media.type, tmdbId: media.tmdbId })
     .from(media)
