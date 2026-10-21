@@ -109,7 +109,8 @@ export async function scheduleRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
-  // Run right now, regardless of the schedule. Returns the pick.
+  // Run right now, regardless of the schedule. Returns the pick. A one-shot
+  // stays armed — pressing this must not cancel the run the user set up.
   // A manual run can announce on Discord, so it's rate-limited like posting a poll there.
   app.post(
     '/api/schedules/:id/run',
